@@ -26,7 +26,7 @@ namespace {
 		}
 		RtlFillMemory(bufObj, transferred, filler);
 		++stats.readRequests;
-		stats.readRequests += transferred;
+		stats.readBytes += transferred;
 		WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, transferred);
 	}
 
@@ -36,7 +36,7 @@ namespace {
 		if (maxWrite >= 0 && transferred > size_t(maxWrite))
 			transferred = maxWrite;
 		++stats.writeRequests;
-		stats.writeRequests += transferred;
+		stats.writeBytes += transferred;
 		WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, transferred);
 	}
 
@@ -104,6 +104,7 @@ namespace {
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
+			transferred = sizeof(stats);
 			if (IoControlCode == IOCTL_ZERODRIVER_GET_STATS)
 				break;
 			[[fallthrough]];
@@ -121,7 +122,7 @@ namespace {
 
 	NTSTATUS EvtDeviceAdd([[maybe_unused]] WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 	{
-		DECLARE_CONST_UNICODE_STRING(deviceName, ZERODRIVER_DEVICE_ZERO);
+		DECLARE_CONST_UNICODE_STRING(deviceName, ZERODRIVER_DEVICE);
 		if (NTSTATUS status = WdfDeviceInitAssignName(DeviceInit, &deviceName); status != STATUS_SUCCESS) {
 			DbgPrint("WdfDeviceInitAssignName status=%ld", status);
 			return status;

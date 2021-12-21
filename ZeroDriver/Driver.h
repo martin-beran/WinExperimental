@@ -1,6 +1,11 @@
 #pragma once
 
+#ifdef _KERNEL_MODE
 #include <ntddk.h>
+#else
+#include <Windows.h>
+#include <winioctl.h>
+#endif
 
 struct ZeroDriverStats {
 	ULONGLONG readRequests = 0;
@@ -9,8 +14,11 @@ struct ZeroDriverStats {
 	ULONGLONG writeBytes = 0;
 };
 
-#define ZERODRIVER_DEVICE_ZERO L"\\Device\\ZeroDriver"
-
+#ifdef _KERNEL_MODE
+#define ZERODRIVER_DEVICE LR"(\Device\ZeroDriver)"
+#else
+#define ZERODRIVER_DEVICE LR"(\\.\GLOBALROOT\Device\ZeroDriver)"
+#endif
 #define ZERODRIVER_DEVICE_TYPE FILE_DEVICE_UNKNOWN
 
 #define IOCTL_ZERODRIVER_SET_MAX_READ CTL_CODE(ZERODRIVER_DEVICE_TYPE, 0x800, METHOD_BUFFERED, FILE_WRITE_DATA)
