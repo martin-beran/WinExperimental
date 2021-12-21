@@ -9,7 +9,7 @@ namespace {
 	LONGLONG maxWrite = -1;
 	char filler = '\0';
 
-	PacketDriverStats stats{};
+	ZeroDriverStats stats{};
 
 	void EvtIoRead([[maybe_unused]] WDFQUEUE Queue, WDFREQUEST Request, size_t Length)
 	{
@@ -45,70 +45,70 @@ namespace {
 	{
 		ULONG_PTR transferred = 0;
 		switch (IoControlCode) {
-		case IOCTL_PACKETDRIVER_SET_MAX_READ:
+		case IOCTL_ZERODRIVER_SET_MAX_READ:
 		{
 			WDFMEMORY memory;
 			if (NTSTATUS status = WdfRequestRetrieveInputMemory(Request, &memory); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_SET_MAX_READ WdfRequestRetrieveInputMemory status=%ld", status);
+				DbgPrint("IOCTL_ZERODRIVER_SET_MAX_READ WdfRequestRetrieveInputMemory status=%ld", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
 			if (NTSTATUS status = WdfMemoryCopyToBuffer(memory, 0, &maxRead, sizeof(maxRead)); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_SET_MAX_READ WdfMemoryCopyToBuffer status=%ld", status);
+				DbgPrint("IOCTL_ZERODRIVER_SET_MAX_READ WdfMemoryCopyToBuffer status=%ld", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
 			break;
 		}
-		case IOCTL_PACKETDRIVER_SET_MAX_WRITE:
+		case IOCTL_ZERODRIVER_SET_MAX_WRITE:
 		{
 			WDFMEMORY memory;
 			if (NTSTATUS status = WdfRequestRetrieveInputMemory(Request, &memory); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_SET_MAX_WRITE WdfRequestRetrieveInputMemory status=%ld", status);
+				DbgPrint("IOCTL_ZERODRIVER_SET_MAX_WRITE WdfRequestRetrieveInputMemory status=%ld", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
 			if (NTSTATUS status = WdfMemoryCopyToBuffer(memory, 0, &maxWrite, sizeof(maxWrite)); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_SET_MAX_WRITE WdfMemoryCopyToBuffer status=%ld", status);
+				DbgPrint("IOCTL_ZERODRIVER_SET_MAX_WRITE WdfMemoryCopyToBuffer status=%ld", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
 			break;
 		}
-		case IOCTL_PACKETDRIVER_SET_FILLER:
+		case IOCTL_ZERODRIVER_SET_FILLER:
 		{
 			WDFMEMORY memory;
 			if (NTSTATUS status = WdfRequestRetrieveInputMemory(Request, &memory); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_SET_FILLER WdfRequestRetrieveInputMemory status=%ld", status);
+				DbgPrint("IOCTL_ZERODRIVER_SET_FILLER WdfRequestRetrieveInputMemory status=%ld", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
 			if (NTSTATUS status = WdfMemoryCopyToBuffer(memory, 0, &filler, sizeof(filler)); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_SET_FILLER WdfMemoryCopyToBuffer status=%ld", status);
+				DbgPrint("IOCTL_ZERODRIVER_SET_FILLER WdfMemoryCopyToBuffer status=%ld", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
 			break;
 		}
-		case IOCTL_PACKETDRIVER_GET_STATS:
-		case IOCTL_PACKETDRIVER_GET_AND_RESET_STATS:
+		case IOCTL_ZERODRIVER_GET_STATS:
+		case IOCTL_ZERODRIVER_GET_AND_RESET_STATS:
 		{
 			WDFMEMORY memory;
 			if (NTSTATUS status = WdfRequestRetrieveOutputMemory(Request, &memory); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_SET_FILLER WdfRequestRetrieveInputMemory status=%ld", status);
+				DbgPrint("IOCTL_ZERODRIVER_SET_FILLER WdfRequestRetrieveInputMemory status=%ld", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
 			if (NTSTATUS status = WdfMemoryCopyFromBuffer(memory, 0, &stats, sizeof(stats)); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_SET_FILLER WdfMemoryCopyFromBuffer status=%ld", status);
+				DbgPrint("IOCTL_ZERODRIVER_SET_FILLER WdfMemoryCopyFromBuffer status=%ld", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
-			if (IoControlCode == IOCTL_PACKETDRIVER_GET_STATS)
+			if (IoControlCode == IOCTL_ZERODRIVER_GET_STATS)
 				break;
 			[[fallthrough]];
 		}
-		case IOCTL_PACKETDRIVER_RESET_STATS:
+		case IOCTL_ZERODRIVER_RESET_STATS:
 			stats = {};
 			break;
 		default:
@@ -121,7 +121,7 @@ namespace {
 
 	NTSTATUS EvtDeviceAdd([[maybe_unused]] WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 	{
-		DECLARE_CONST_UNICODE_STRING(deviceName, PACKETDRIVER_DEVICE_ZERO);
+		DECLARE_CONST_UNICODE_STRING(deviceName, ZERODRIVER_DEVICE_ZERO);
 		if (NTSTATUS status = WdfDeviceInitAssignName(DeviceInit, &deviceName); status != STATUS_SUCCESS) {
 			DbgPrint("WdfDeviceInitAssignName status=%ld", status);
 			return status;
@@ -132,7 +132,7 @@ namespace {
 		WdfDeviceInitSetIoTypeEx(DeviceInit, &ioConfig);
 		WDFDEVICE hDevice;
 		NTSTATUS result = WdfDeviceCreate(&DeviceInit, WDF_NO_OBJECT_ATTRIBUTES, &hDevice);
-		DbgPrint("PacketDriverEvtDeviceAdd status=%ld\n", result);
+		DbgPrint("ZeroDriverEvtDeviceAdd status=%ld\n", result);
 		WDF_IO_QUEUE_CONFIG qConfig;
 		WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&qConfig, WdfIoQueueDispatchSequential);
 		qConfig.AllowZeroLengthRequests = true;

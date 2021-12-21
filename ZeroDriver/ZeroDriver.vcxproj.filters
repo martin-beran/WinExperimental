@@ -19,7 +19,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="PacketDriver.inf">
+    <Inf Include="ZeroDriver.inf">
       <Filter>Driver Files</Filter>
     </Inf>
   </ItemGroup>
