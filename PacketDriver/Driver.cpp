@@ -121,7 +121,7 @@ namespace {
 
 	NTSTATUS EvtDeviceAdd([[maybe_unused]] WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 	{
-		DECLARE_CONST_UNICODE_STRING(deviceName, L"\\Device\\PacketDriver");
+		DECLARE_CONST_UNICODE_STRING(deviceName, PACKETDRIVER_DEVICE_ZERO);
 		if (NTSTATUS status = WdfDeviceInitAssignName(DeviceInit, &deviceName); status != STATUS_SUCCESS) {
 			DbgPrint("WdfDeviceInitAssignName status=%ld", status);
 			return status;
