@@ -5,7 +5,62 @@
 
 namespace {
 
-	PacketDriverStats stats;
+	/*** IO queues *****************************************************************/
+
+	WDFQUEUE ioctlQueue = WDF_NO_HANDLE;
+	WDFQUEUE readQueue = WDF_NO_HANDLE;
+	WDFQUEUE writeQueue = WDF_NO_HANDLE;
+
+	struct QueueContextSpace {
+		WDFQUEUE* queue;
+	};
+	WDF_DECLARE_CONTEXT_TYPE(QueueContextSpace);
+
+	void QueueDestroyCallback(WDFOBJECT queue) {
+		if (QueueContextSpace* space = WdfObjectGet_QueueContextSpace(queue); space && space->queue)
+			*space->queue = WDF_NO_HANDLE;
+	}
+
+	class QueueLockGuard {
+	public:
+		QueueLockGuard(WDFQUEUE queue) : queue(queue) {
+			if (queue != WDF_NO_HANDLE)
+				WdfObjectAcquireLock(queue);
+		}
+		QueueLockGuard(const QueueLockGuard&) = delete;
+		QueueLockGuard(QueueLockGuard&&) = delete;
+		~QueueLockGuard() {
+			if (queue != WDF_NO_HANDLE)
+				WdfObjectReleaseLock(queue);
+		}
+		QueueLockGuard& operator=(const QueueLockGuard&) = delete;
+		QueueLockGuard& operator=(QueueLockGuard&&) = delete;
+	private:
+		WDFQUEUE queue;
+	};
+
+	/*** Statistics ****************************************************************/
+
+	PacketDriverStats stats{};
+
+	/*** Packet read processing ****************************************************/
+
+	bool ioReadReady = false;
+	bool wfpPacketReady = false;
+
+	// Must be called with locked synchronization lock of readQueue
+	void doPacketRead(bool readReady, bool packetReady)
+	{
+		if (readReady)
+			ioReadReady = true;
+		if (packetReady)
+			wfpPacketReady = true;
+		if (!ioReadReady || !wfpPacketReady)
+			return;
+		// Here, we have an IO read requests and a packet to be returned
+	}
+
+	/*** Device IO callbacks *******************************************************/
 
 	void EvtIoDeviceControl([[maybe_unused]] WDFQUEUE Queue, WDFREQUEST Request, [[maybe_unused]] size_t OutputBufferLength,
 		[[maybe_unused]] size_t InputBufferLength, ULONG IoControlCode)
@@ -39,15 +94,17 @@ namespace {
 		}
 	}
 
-	void EvtIoReadReady(WDFQUEUE /*Queue*/, [[maybe_unused]] WDFCONTEXT /*Context*/)
-	{
-		// TODO
+	void EvtIoReadReady([[maybe_unused]] WDFQUEUE Queue, [[maybe_unused]] WDFCONTEXT Context)
+	{	
+		doPacketRead(true, false);
 	}
 
 	void EvtIoWrite([[maybe_unused]] WDFQUEUE Queue, WDFREQUEST /*Request*/, size_t /*Length*/)
 	{
 		// TODO
 	}
+
+	/*** IO device initialization **************************************************/
 
 	NTSTATUS EvtDeviceAdd([[maybe_unused]] WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 	{
@@ -67,29 +124,31 @@ namespace {
 			return status;
 		}
 		// Create IO queues
-		WDF_OBJECT_ATTRIBUTES qAttr;
-		WDF_OBJECT_ATTRIBUTES_INIT(&qAttr);
-		qAttr.SynchronizationScope = WdfSynchronizationScopeQueue;
-		WDFQUEUE hQueue;
-		// Create default IO queue, used for IOCTL requests
 		WDF_IO_QUEUE_CONFIG qConfig;
+		WDF_OBJECT_ATTRIBUTES qAttr;
+		WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&qAttr, QueueContextSpace);
+		qAttr.SynchronizationScope = WdfSynchronizationScopeQueue;
+		qAttr.EvtDestroyCallback = QueueDestroyCallback;
+		// Create default IO queue, used for IOCTL requests
 		WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&qConfig, WdfIoQueueDispatchSequential);
 		qConfig.EvtIoDeviceControl = EvtIoDeviceControl;
-		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &hQueue);	status != STATUS_SUCCESS) {
+		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &ioctlQueue);	status != STATUS_SUCCESS) {
 			DbgPrint("WdfIoQueueCreate(device control) status=%ld", status);
 			return status;
 		}
+		WdfObjectGet_QueueContextSpace(ioctlQueue)->queue = &ioctlQueue;
 		// Create IO queue for reading packets
 		WDF_IO_QUEUE_CONFIG_INIT(&qConfig, WdfIoQueueDispatchManual);
-		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &hQueue);	status != STATUS_SUCCESS) {
+		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &readQueue);	status != STATUS_SUCCESS) {
 			DbgPrint("WdfIoQueueCreate(device control) status=%ld", status);
 			return status;
 		}
-		if (NTSTATUS status = WdfIoQueueReadyNotify(hQueue, EvtIoReadReady, nullptr); status != STATUS_SUCCESS) {
+		WdfObjectGet_QueueContextSpace(readQueue)->queue = &readQueue;
+		if (NTSTATUS status = WdfIoQueueReadyNotify(readQueue, EvtIoReadReady, nullptr); status != STATUS_SUCCESS) {
 			DbgPrint("WdfIoQueueReadyNotify(read) status=%ld", status);
 			return status;
 		}
-		if (NTSTATUS status = WdfDeviceConfigureRequestDispatching(hDevice, hQueue, WdfRequestTypeRead);
+		if (NTSTATUS status = WdfDeviceConfigureRequestDispatching(hDevice, readQueue, WdfRequestTypeRead);
 			status != STATUS_SUCCESS)
 		{
 			DbgPrint("WdfDeviceConfigureRequestDispatching(read) status=%ld", status);
@@ -98,11 +157,12 @@ namespace {
 		// Create IO queue for writing packets
 		WDF_IO_QUEUE_CONFIG_INIT(&qConfig, WdfIoQueueDispatchSequential);
 		qConfig.EvtIoWrite = EvtIoWrite;
-		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &hQueue);	status != STATUS_SUCCESS) {
+		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &writeQueue);	status != STATUS_SUCCESS) {
 			DbgPrint("WdfIoQueueCreate(device control) status=%ld", status);
 			return status;
 		}
-		if (NTSTATUS status = WdfDeviceConfigureRequestDispatching(hDevice, hQueue, WdfRequestTypeWrite);
+		WdfObjectGet_QueueContextSpace(writeQueue)->queue = &writeQueue;
+		if (NTSTATUS status = WdfDeviceConfigureRequestDispatching(hDevice, writeQueue, WdfRequestTypeWrite);
 			status != STATUS_SUCCESS)
 		{
 			DbgPrint("WdfDeviceConfigureRequestDispatching(write) status=%ld", status);
@@ -111,6 +171,8 @@ namespace {
 		return STATUS_SUCCESS;
 	}
 }
+
+/*** Driver initialization *********************************************************/
 
 extern "C" {
 	DRIVER_INITIALIZE DriverEntry;
