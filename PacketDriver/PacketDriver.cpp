@@ -2,6 +2,8 @@
 
 #include <ntddk.h>
 #include <wdf.h>
+#include <fwpsk.h>
+#include <fwpmk.h>
 
 namespace {
 
@@ -16,7 +18,8 @@ namespace {
 	};
 	WDF_DECLARE_CONTEXT_TYPE(QueueContextSpace);
 
-	void QueueDestroyCallback(WDFOBJECT queue) {
+	void QueueDestroyCallback(WDFOBJECT queue)
+	{
 		if (QueueContextSpace* space = WdfObjectGet_QueueContextSpace(queue); space && space->queue)
 			*space->queue = WDF_NO_HANDLE;
 	}
@@ -58,6 +61,83 @@ namespace {
 		if (!ioReadReady || !wfpPacketReady)
 			return;
 		// Here, we have an IO read requests and a packet to be returned
+	}
+
+	/*** WFP callout handler *******************************************************/
+
+	HANDLE injectionHandleIpv4;
+	HANDLE injectionHandleIpv6;
+
+	struct DeviceContextSpace {
+		bool calloutRegistered;
+		UINT32 calloutId;
+		HANDLE* injectionHandleIpv4;
+		HANDLE* injectionHandleIpv6;
+	};
+	WDF_DECLARE_CONTEXT_TYPE(DeviceContextSpace);
+
+	void DeviceDestroyCallback(WDFOBJECT device)
+	{
+		if (DeviceContextSpace* space = WdfObjectGet_DeviceContextSpace(device); space) {
+			if (space->calloutRegistered) {
+				if (NTSTATUS status = FwpsCalloutUnregisterById0(space->calloutId); status != STATUS_SUCCESS)
+					DbgPrint("FwpsCalloutUnregisterById0 status=%ld", status);
+				space->calloutRegistered = false;
+			}
+			if (space->injectionHandleIpv4) {
+				if (NTSTATUS status = FwpsInjectionHandleDestroy0(*space->injectionHandleIpv4); status != STATUS_SUCCESS)
+					DbgPrint("FwpsInjectionHandleDestroy0(IPv4) status=%ld", status);
+				space->injectionHandleIpv4 = nullptr;
+			}
+			if (space->injectionHandleIpv6) {
+				if (NTSTATUS status = FwpsInjectionHandleDestroy0(*space->injectionHandleIpv6); status != STATUS_SUCCESS)
+					DbgPrint("FwpsInjectionHandleDestroy0(IPv6) status=%ld", status);
+				space->injectionHandleIpv6 = nullptr;
+			}
+		}
+	}
+
+	void packetClassifyFn(const FWPS_INCOMING_VALUES0* inFixedValues, const FWPS_INCOMING_METADATA_VALUES0* /*inMetaValues*/,
+		void* layerData, [[maybe_unused]] const FWPS_FILTER0* filter, [[maybe_unused]] UINT64 flowContext,
+		FWPS_CLASSIFY_OUT0* classifyOut)
+	{
+		if ((classifyOut->rights & FWPS_RIGHT_ACTION_WRITE) == 0) // Cannot modify verdict
+			return;
+		if (!layerData) {
+			// No packet data
+			classifyOut->actionType = FWP_ACTION_CONTINUE;
+			return;
+		}
+		FWPS_PACKET_INJECTION_STATE injectionState = FWPS_PACKET_NOT_INJECTED;
+		switch (inFixedValues->layerId) {
+		case FWPS_LAYER_INBOUND_IPPACKET_V4:
+		case FWPS_LAYER_INBOUND_TRANSPORT_V4:
+		case FWPS_LAYER_OUTBOUND_IPPACKET_V4:
+		case FWPS_LAYER_OUTBOUND_TRANSPORT_V4:
+			injectionState = FwpsQueryPacketInjectionState0(injectionHandleIpv4,
+				reinterpret_cast<const NET_BUFFER_LIST*>(layerData), nullptr);
+			break;
+		case FWPS_LAYER_INBOUND_IPPACKET_V6:
+		case FWPS_LAYER_INBOUND_TRANSPORT_V6:
+		case FWPS_LAYER_OUTBOUND_IPPACKET_V6:
+		case FWPS_LAYER_OUTBOUND_TRANSPORT_V6:
+			injectionState = FwpsQueryPacketInjectionState0(injectionHandleIpv6,
+				reinterpret_cast<const NET_BUFFER_LIST*>(layerData), nullptr);
+			break;
+		default:
+			// Unsupported layer
+			classifyOut->actionType = FWP_ACTION_CONTINUE;
+			return;
+		}
+		if (injectionState == FWPS_PACKET_INJECTED_BY_SELF || injectionState == FWPS_PACKET_PREVIOUSLY_INJECTED_BY_SELF) {
+			// Break a cycle for an injected packet
+			classifyOut->actionType = FWP_ACTION_CONTINUE;
+			return;
+		}
+		// TODO
+		// Consume the packet silently
+		classifyOut->actionType = FWP_ACTION_BLOCK;
+		classifyOut->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
 	}
 
 	/*** Device IO callbacks *******************************************************/
@@ -114,18 +194,20 @@ namespace {
 			DbgPrint("WdfDeviceInitAssignName status=%ld", status);
 			return status;
 		}
+		WDF_OBJECT_ATTRIBUTES qAttr;
+		WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&qAttr, DeviceContextSpace);
+		qAttr.EvtDestroyCallback = DeviceDestroyCallback;
 		WDF_IO_TYPE_CONFIG ioConfig;
 		WDF_IO_TYPE_CONFIG_INIT(&ioConfig);
 		ioConfig.ReadWriteIoType = WdfDeviceIoDirect;
 		WdfDeviceInitSetIoTypeEx(DeviceInit, &ioConfig);
 		WDFDEVICE hDevice;
-		if (NTSTATUS status = WdfDeviceCreate(&DeviceInit, WDF_NO_OBJECT_ATTRIBUTES, &hDevice); status != STATUS_SUCCESS) {
+		if (NTSTATUS status = WdfDeviceCreate(&DeviceInit, &qAttr, &hDevice); status != STATUS_SUCCESS) {
 			DbgPrint("EvtDeviceAdd status=%ld\n", status);
 			return status;
 		}
 		// Create IO queues
 		WDF_IO_QUEUE_CONFIG qConfig;
-		WDF_OBJECT_ATTRIBUTES qAttr;
 		WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&qAttr, QueueContextSpace);
 		qAttr.SynchronizationScope = WdfSynchronizationScopeQueue;
 		qAttr.EvtDestroyCallback = QueueDestroyCallback;
@@ -168,7 +250,40 @@ namespace {
 			DbgPrint("WdfDeviceConfigureRequestDispatching(write) status=%ld", status);
 			return status;
 		}
-		return STATUS_SUCCESS;
+		// Initialize WFP callout
+		PDEVICE_OBJECT deviceObject = WdfDeviceWdmGetDeviceObject(hDevice);
+		FWPS_CALLOUT0 callout{
+			PacketDriverCalloutGuid,
+			0,
+			packetClassifyFn,
+			nullptr,
+			nullptr
+		};
+		DeviceContextSpace* deviceContext = WdfObjectGet_DeviceContextSpace(hDevice);
+		NTSTATUS status = STATUS_SUCCESS;
+		if (status == STATUS_SUCCESS &&
+			(status = FwpsCalloutRegister0(deviceObject, &callout, &deviceContext->calloutId)) != STATUS_SUCCESS)
+		{
+			DbgPrint("FwpsCalloutRegister0 status=%ld", status);
+		} else
+			deviceContext->calloutRegistered = true;
+		if (status == STATUS_SUCCESS &&
+			(status = FwpsInjectionHandleCreate0(AF_INET, FWPS_INJECTION_TYPE_NETWORK, &injectionHandleIpv4))
+			!= STATUS_SUCCESS)
+		{
+			DbgPrint("FwpsInjectionHandleCreate0(IPv4) status=%ld", status);
+		} else
+			deviceContext->injectionHandleIpv4 = &injectionHandleIpv4;
+		if (status == STATUS_SUCCESS &&
+			(status = FwpsInjectionHandleCreate0(AF_INET6, FWPS_INJECTION_TYPE_NETWORK, &injectionHandleIpv6))
+			!= STATUS_SUCCESS)
+		{
+			DbgPrint("FwpsInjectionHandleCreate0(IPv6) status=%ld", status);
+		} else
+			deviceContext->injectionHandleIpv6 = &injectionHandleIpv6;
+		if (status != STATUS_SUCCESS)
+			DeviceDestroyCallback(hDevice);
+		return status;
 	}
 }
 
