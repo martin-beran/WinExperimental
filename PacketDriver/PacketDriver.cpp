@@ -44,6 +44,7 @@ namespace {
 
 	/*** Statistics ****************************************************************/
 
+	// Requires holding ioctlQueue lock
 	PacketDriverStats stats{};
 
 	/*** Packet read processing ****************************************************/
@@ -63,6 +64,33 @@ namespace {
 		// Here, we have an IO read requests and a packet to be returned
 	}
 
+	/*** Packet write processing ***************************************************/
+
+	// Require holding writeQueue lock
+	ULONGLONG writingPackets = 0;
+	ULONGLONG writingBytes = 0;
+	
+	NDIS_HANDLE pool;
+
+	// Called with holding writeQueue lock
+	void doPacketWrite(PacketInfo& info, char* data)
+	{
+		if (writingPackets >= maxWriteStoredPackets || writingBytes >= maxWriteStoredBytes) {
+			QueueLockGuard lock(ioctlQueue);
+			++stats.sentDroppedPackets;
+			return;
+		}
+		NET_BUFFER_LIST* bufferList;
+		if (FwpsAllocateNetBufferAndNetBufferList0(pool, 0, 0, nullptr, 0, 0, &bufferList) != STATUS_SUCCESS ||
+			NdisRetreatNetBufferDataStart(NET_BUFFER_LIST_FIRST_NB(bufferList), info.size, 0, nullptr) != STATUS_SUCCESS)
+		{
+			QueueLockGuard lock(ioctlQueue);
+			++stats.sentFailedPackets;
+			return;
+		}
+		RtlCopyMemory(NET_BUFFER_FIRST_MDL(NET_BUFFER_LIST_FIRST_NB(bufferList))->, data, info.size);
+	}
+
 	/*** WFP callout handler *******************************************************/
 
 	HANDLE injectionHandleIpv4;
@@ -73,11 +101,13 @@ namespace {
 		UINT32 calloutId;
 		HANDLE* injectionHandleIpv4;
 		HANDLE* injectionHandleIpv6;
+		NDIS_HANDLE pool;
 	};
 	WDF_DECLARE_CONTEXT_TYPE(DeviceContextSpace);
 
 	void DeviceDestroyCallback(WDFOBJECT device)
 	{
+		DbgPrint("DeviceDestroyCallback");
 		if (DeviceContextSpace* space = WdfObjectGet_DeviceContextSpace(device); space) {
 			if (space->calloutRegistered) {
 				if (NTSTATUS status = FwpsCalloutUnregisterById0(space->calloutId); status != STATUS_SUCCESS)
@@ -94,6 +124,8 @@ namespace {
 					DbgPrint("FwpsInjectionHandleDestroy0(IPv6) status=%ld", status);
 				space->injectionHandleIpv6 = nullptr;
 			}
+			if (space->pool)
+				NdisFreeNetBufferListPool(space->pool);
 		}
 	}
 
@@ -179,9 +211,48 @@ namespace {
 		doPacketRead(true, false);
 	}
 
-	void EvtIoWrite([[maybe_unused]] WDFQUEUE Queue, WDFREQUEST /*Request*/, size_t /*Length*/)
+	void requestComplete(WDFREQUEST request, const char* msg, NTSTATUS status)
 	{
-		// TODO
+		if (status != STATUS_SUCCESS)
+			DbgPrint("%s status=%ld", msg, status);
+		WdfRequestCompleteWithInformation(request, status, 0);
+	}
+
+	void EvtIoWrite([[maybe_unused]] WDFQUEUE Queue, WDFREQUEST Request, size_t Length)
+	{
+		// Get input buffer
+		if (Length < sizeof(PacketInfo)) {
+			requestComplete(Request, "EvtIoWrite: Smaller than PacketInfo", STATUS_BUFFER_TOO_SMALL);
+			return;
+		}
+		void* ioBuf;
+		if (NTSTATUS status = WdfRequestRetrieveInputBuffer(Request, Length, &ioBuf, nullptr)) {
+			requestComplete(Request, "WdfRequestRetrieveInputBuffer", status);
+			return;
+		}
+		// Check buffer content
+		PacketInfo* pInfo = reinterpret_cast<PacketInfo*>(ioBuf);
+		size_t n = 0;
+		size_t dataSize = 0;
+		while (Length - n * sizeof(PacketInfo) >= sizeof(PacketInfo) && pInfo[n].size > 0) {
+			dataSize += pInfo[n].size;
+			++n;
+		}
+		if (Length - n * sizeof(PacketInfo) < sizeof(PacketInfo)) {
+			requestComplete(Request, "EvtIoWrite: Truncated PacketInfo", STATUS_BUFFER_TOO_SMALL);
+			return;
+		}
+		char* pData = reinterpret_cast<char*>(pInfo + n + 1);
+		if (Length - (n + 1) * sizeof(PacketInfo) < dataSize) {
+			requestComplete(Request, "EvtIoWrite: Truncated packet data", STATUS_BUFFER_TOO_SMALL);
+			return;
+		}
+		// Now pInfo[0...n-1] and pData[0...dataSize-1] are valid
+		for (size_t i = 0; i < n; ++i) {
+			doPacketWrite(pInfo[i], pData);
+			pData += pInfo[i].size;
+		}
+		requestComplete(Request, "OK", STATUS_SUCCESS);
 	}
 
 	/*** IO device initialization **************************************************/
@@ -281,6 +352,20 @@ namespace {
 			DbgPrint("FwpsInjectionHandleCreate0(IPv6) status=%ld", status);
 		} else
 			deviceContext->injectionHandleIpv6 = &injectionHandleIpv6;
+		NET_BUFFER_LIST_POOL_PARAMETERS poolParams;
+		poolParams.Header.Type = NDIS_OBJECT_TYPE_DEFAULT;
+		poolParams.Header.Revision = NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+		poolParams.Header.Size = NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+		poolParams.ProtocolId = 0;
+		poolParams.fAllocateNetBuffer = true;
+		poolParams.ContextSize = 0;
+		poolParams.PoolTag = 'pool';
+		poolParams.DataSize = 0;
+		if (status == STATUS_SUCCESS && (pool = NdisAllocateNetBufferListPool(nullptr, &poolParams)) != nullptr) {
+			DbgPrint("NdisAllocateNetBufferListPool failed");
+			status = STATUS_UNSUCCESSFUL;
+		}
+		deviceContext->pool = pool;
 		if (status != STATUS_SUCCESS)
 			DeviceDestroyCallback(hDevice);
 		return status;
