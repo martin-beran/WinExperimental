@@ -2,6 +2,7 @@
 
 #ifdef _KERNEL_MODE
 #include <ntddk.h>
+#include <ifdef.h>
 #else
 #include <Windows.h>
 #include <winioctl.h>
@@ -19,6 +20,7 @@ struct PacketDriverStats {
 
 #ifdef _KERNEL_MODE
 #define PACKETDRIVER_DEVICE LR"(\Device\PacketDriver)"
+#define PACKETDRIVER_TAG 'DtkP'
 #else
 #define PACKETDRIVER_DEVICE LR"(\\.\GLOBALROOT\Device\PacketDriver)"
 #endif
@@ -46,10 +48,6 @@ struct PacketInfo {
 	enum Direction {
 		Send,
 		Receive,
-	};
-	enum Layer {
-		Network,
-		Transport,
 	};
 	Direction direction;
 	COMPARTMENT_ID compartment;

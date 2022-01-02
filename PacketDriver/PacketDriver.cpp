@@ -62,6 +62,7 @@ namespace {
 		if (!ioReadReady || !wfpPacketReady)
 			return;
 		// Here, we have an IO read requests and a packet to be returned
+		// To get data from a NBL, use NdisGetDataBuffer
 	}
 
 	/*** Packet write processing ***************************************************/
@@ -72,36 +73,93 @@ namespace {
 	
 	NDIS_HANDLE pool;
 
+	HANDLE injectionHandleIpv4;
+	HANDLE injectionHandleIpv6;
+
+	void injectComplete([[maybe_unused]] void* context, NET_BUFFER_LIST* nbl, [[maybe_unused]] BOOLEAN dispatchLevel)
+
+	{
+		ULONG dataLength = NET_BUFFER_LIST_FIRST_NB(nbl)->DataLength;
+		{
+			QueueLockGuard lock(ioctlQueue);
+			++stats.sentPackets;
+			stats.sentBytes += dataLength;
+		}
+		{
+			QueueLockGuard lock(writeQueue);
+			// Do not block sending more packets if there is a bug causing a bad value of writingPackets or writingBytes
+			if (writingPackets > 0)
+				--writingPackets;
+			if (writingBytes >= dataLength)
+				writingBytes -= dataLength;
+			else
+				writingBytes = 0;
+		}
+		FwpsFreeNetBufferList0(nbl);
+	}
+
 	// Called with holding writeQueue lock
 	void doPacketWrite(PacketInfo& info, char* data)
 	{
-		if (writingPackets >= maxWriteStoredPackets || writingBytes >= maxWriteStoredBytes) {
+		if (writingPackets >= maxWriteStoredPackets || writingBytes + info.size > maxWriteStoredBytes) {
 			QueueLockGuard lock(ioctlQueue);
 			++stats.sentDroppedPackets;
 			return;
 		}
-		NET_BUFFER_LIST* bufferList;
-		if (FwpsAllocateNetBufferAndNetBufferList0(pool, 0, 0, nullptr, 0, 0, &bufferList) != STATUS_SUCCESS ||
-			NdisRetreatNetBufferDataStart(NET_BUFFER_LIST_FIRST_NB(bufferList), info.size, 0, nullptr) != STATUS_SUCCESS)
-		{
-			QueueLockGuard lock(ioctlQueue);
-			++stats.sentFailedPackets;
-			return;
+		void* buffer = ExAllocatePool2(POOL_FLAG_NON_PAGED, info.size, PACKETDRIVER_TAG);
+		MDL* mdl = nullptr;
+		NET_BUFFER_LIST* bufferList = nullptr;
+		if (!buffer)
+			goto fail;
+		RtlCopyMemory(buffer, data, info.size);
+		mdl = IoAllocateMdl(buffer, static_cast<ULONG>(info.size), false, false, nullptr);
+		if (!mdl)
+			goto fail;
+		if (FwpsAllocateNetBufferAndNetBufferList0(pool, 0, 0, mdl, 0, 0, &bufferList) != STATUS_SUCCESS)
+			goto fail;
+		mdl = nullptr;
+		buffer = nullptr;
+		// TODO injection of IPv6 via injectionHandleIpv6
+		switch (info.direction) {
+		case PacketInfo::Send:
+			if (FwpsInjectNetworkSendAsync0(injectionHandleIpv4, nullptr, 0, info.compartment, bufferList,
+				injectComplete, nullptr) != STATUS_SUCCESS)
+			{
+				goto fail;
+			}
+			break;
+		case PacketInfo::Receive:
+			if (FwpsInjectNetworkReceiveAsync0(injectionHandleIpv4, nullptr, 0, info.compartment, info.interfaceIdx,
+				info.subinterfaceIdx, bufferList, injectComplete, nullptr) != STATUS_SUCCESS)
+			{
+				goto fail;
+			}
+			break;
+		default:
+			goto fail;
 		}
-		RtlCopyMemory(NET_BUFFER_FIRST_MDL(NET_BUFFER_LIST_FIRST_NB(bufferList))->, data, info.size);
+		++writingPackets;
+		writingBytes += info.size;
+		return;
+	fail:
+		if (bufferList)
+			FwpsFreeNetBufferList0(bufferList);
+		if (mdl)
+			IoFreeMdl(mdl);
+		if (buffer)
+			ExFreePool(buffer);
+		QueueLockGuard lock(ioctlQueue);
+		++stats.sentFailedPackets;
 	}
 
 	/*** WFP callout handler *******************************************************/
-
-	HANDLE injectionHandleIpv4;
-	HANDLE injectionHandleIpv6;
 
 	struct DeviceContextSpace {
 		bool calloutRegistered;
 		UINT32 calloutId;
 		HANDLE* injectionHandleIpv4;
 		HANDLE* injectionHandleIpv6;
-		NDIS_HANDLE pool;
+		NDIS_HANDLE pool = nullptr;
 	};
 	WDF_DECLARE_CONTEXT_TYPE(DeviceContextSpace);
 
@@ -143,16 +201,12 @@ namespace {
 		FWPS_PACKET_INJECTION_STATE injectionState = FWPS_PACKET_NOT_INJECTED;
 		switch (inFixedValues->layerId) {
 		case FWPS_LAYER_INBOUND_IPPACKET_V4:
-		case FWPS_LAYER_INBOUND_TRANSPORT_V4:
 		case FWPS_LAYER_OUTBOUND_IPPACKET_V4:
-		case FWPS_LAYER_OUTBOUND_TRANSPORT_V4:
 			injectionState = FwpsQueryPacketInjectionState0(injectionHandleIpv4,
 				reinterpret_cast<const NET_BUFFER_LIST*>(layerData), nullptr);
 			break;
 		case FWPS_LAYER_INBOUND_IPPACKET_V6:
-		case FWPS_LAYER_INBOUND_TRANSPORT_V6:
 		case FWPS_LAYER_OUTBOUND_IPPACKET_V6:
-		case FWPS_LAYER_OUTBOUND_TRANSPORT_V6:
 			injectionState = FwpsQueryPacketInjectionState0(injectionHandleIpv6,
 				reinterpret_cast<const NET_BUFFER_LIST*>(layerData), nullptr);
 			break;
@@ -359,9 +413,9 @@ namespace {
 		poolParams.ProtocolId = 0;
 		poolParams.fAllocateNetBuffer = true;
 		poolParams.ContextSize = 0;
-		poolParams.PoolTag = 'pool';
+		poolParams.PoolTag = PACKETDRIVER_TAG;
 		poolParams.DataSize = 0;
-		if (status == STATUS_SUCCESS && (pool = NdisAllocateNetBufferListPool(nullptr, &poolParams)) != nullptr) {
+		if (status == STATUS_SUCCESS && (pool = NdisAllocateNetBufferListPool(nullptr, &poolParams)) == nullptr) {
 			DbgPrint("NdisAllocateNetBufferListPool failed");
 			status = STATUS_UNSUCCESSFUL;
 		}
