@@ -26,19 +26,33 @@ namespace {
 
 	class QueueLockGuard {
 	public:
-		QueueLockGuard(WDFQUEUE queue) : queue(queue) {
+		QueueLockGuard(): QueueLockGuard(WDF_NO_HANDLE) {}
+		QueueLockGuard(WDFQUEUE queue): queue(queue) {
 			if (queue != WDF_NO_HANDLE)
 				WdfObjectAcquireLock(queue);
 		}
 		QueueLockGuard(const QueueLockGuard&) = delete;
-		QueueLockGuard(QueueLockGuard&&) = delete;
+		QueueLockGuard(QueueLockGuard&& o) noexcept {
+			queue = o.queue;
+			o.queue = WDF_NO_HANDLE;
+		}
 		~QueueLockGuard() {
+			unlock();
+		}
+		QueueLockGuard& operator=(const QueueLockGuard&) = delete;
+		QueueLockGuard& operator=(QueueLockGuard&& o) noexcept {
+			if (this != &o) {
+				unlock();
+				queue = o.queue;
+				o.queue = WDF_NO_HANDLE;
+			}
+			return *this;
+		}
+	private:
+		void unlock() {
 			if (queue != WDF_NO_HANDLE)
 				WdfObjectReleaseLock(queue);
 		}
-		QueueLockGuard& operator=(const QueueLockGuard&) = delete;
-		QueueLockGuard& operator=(QueueLockGuard&&) = delete;
-	private:
 		WDFQUEUE queue;
 	};
 
@@ -50,19 +64,168 @@ namespace {
 	/*** Packet read processing ****************************************************/
 
 	bool ioReadReady = false;
-	bool wfpPacketReady = false;
+
+	class PacketStorage {
+	public:
+		bool empty() {
+			return count[0] + count[1] == 0;
+		}
+		NTSTATUS init() {
+			if (storedPackets == 0) {
+				DbgPrint("PacketStorage storedPackets=0");
+				destroy();
+				return STATUS_UNSUCCESSFUL;
+			}
+			if (storedBytes == 0) {
+				DbgPrint("PacketStorage storedBytes=0");
+				destroy();
+				return STATUS_UNSUCCESSFUL;
+			}
+			for (PacketInfo*& p : info) {
+				p = reinterpret_cast<PacketInfo*>(ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*p) * storedPackets,
+					PACKETDRIVER_TAG));
+				if (!p) {
+					DbgPrint("Cannot allocate PacketInfo array");
+					destroy();
+					return STATUS_INSUFFICIENT_RESOURCES;
+				}
+			}
+			for (char*& p : data) {
+				p = reinterpret_cast<char*>(ExAllocatePool2(POOL_FLAG_NON_PAGED, storedBytes, PACKETDRIVER_TAG));
+				if (!p) {
+					DbgPrint("Cannot allocate packet data array");
+					destroy();
+					return STATUS_INSUFFICIENT_RESOURCES;
+				}
+			}
+			return STATUS_SUCCESS;
+		}
+		void destroy() {
+			for (PacketInfo*& p : info)
+				if (p) {
+					ExFreePool(p);
+					p = nullptr;
+				}
+			for (char*& p : data) {
+				if (p) {
+					ExFreePool(p);
+					p = nullptr;
+				}
+			}
+		}
+		void* insert(size_t sz, const FWPS_INCOMING_METADATA_VALUES0* meta, const UINT32* subinterfaceIdx) {
+			if (sz > storedBytes)
+				return nullptr; // packet does not fit to the data buffer
+			PacketInfo::Direction direction =
+				meta->packetDirection == FWP_DIRECTION_OUTBOUND ? PacketInfo::Send : PacketInfo::Receive;
+			if ((meta->currentMetadataValues & neededMetadata) != neededMetadata)
+				return nullptr; // not all required metadata are available
+			if (direction == FWP_DIRECTION_INBOUND)
+				if ((meta->currentMetadataValues & FWPS_METADATA_FIELD_SOURCE_INTERFACE_INDEX) !=
+					FWPS_METADATA_FIELD_SOURCE_INTERFACE_INDEX ||
+					!subinterfaceIdx)
+				{
+					return nullptr; // not all required metadata are available
+				}
+			if (count[pushSelect] >= storedPackets || pushDataIdx + sz >= storedBytes) {
+				pushSelect = 1 - pushSelect;
+				if (popSelect == pushSelect) {
+					popSelect = 1 - popSelect;
+					popPacketIdx = 0;
+					popDataIdx = 0;
+				}
+				count[pushSelect] = 0;
+				pushDataIdx = 0;
+			}
+			PacketInfo& pi = info[pushSelect][count[pushSelect]];
+			pi.direction = direction;
+			pi.compartment = static_cast<COMPARTMENT_ID>(meta->compartmentId);
+			pi.interfaceIdx = meta->sourceInterfaceIndex;
+			pi.subinterfaceIdx = IF_INDEX(subinterfaceIdx ? *subinterfaceIdx : 0);
+			pi.size = sz;
+			void* result = data[pushSelect] + pushDataIdx;
+			++count[pushSelect];
+			pushDataIdx += sz;
+			return result;
+		}
+		void* get(PacketInfo*& packetInfo) {
+			if (count[popSelect] != 0 && popPacketIdx == count[popSelect]) {
+				popSelect = 1 - popSelect;
+				popPacketIdx = 0;
+				popDataIdx = 0;
+			}
+			if (popPacketIdx < count[popSelect]) {
+				packetInfo = &info[popSelect][popPacketIdx];
+				return &data[popSelect][popDataIdx];
+			} else {
+				packetInfo = nullptr;
+				return nullptr;
+			}
+		}
+		void pop() {
+			popDataIdx += info[popSelect][popPacketIdx++].size;
+		}
+		void save() {
+			savedPopSelect = popSelect;
+			savedPopPacketIdx = popPacketIdx;
+			savedPopDataIdx = popDataIdx;
+		}
+		void restore() {
+			popSelect = savedPopSelect;
+			popPacketIdx = savedPopPacketIdx;
+			popDataIdx = savedPopDataIdx;
+		}
+	private:
+		static constexpr UINT32 neededMetadata = FWPS_METADATA_FIELD_PACKET_DIRECTION | FWPS_METADATA_FIELD_COMPARTMENT_ID;
+		size_t storedPackets = maxReadStoredPackets;
+		size_t storedBytes = maxReadStoredBytes;
+		PacketInfo* info[2] = {nullptr, nullptr};
+		char* data[2] = {nullptr, nullptr};
+		size_t count[2] = {0, 0};
+		size_t pushSelect = 0;
+		size_t pushDataIdx = 0;
+		size_t popSelect = 0;
+		size_t popPacketIdx = 0;
+		size_t popDataIdx = 0;
+		size_t savedPopSelect = 0;
+		size_t savedPopPacketIdx = 0;
+		size_t savedPopDataIdx = 0;
+	};
+	// Requires holding readQueue lock
+	PacketStorage storage;
 
 	// Must be called with locked synchronization lock of readQueue
-	void doPacketRead(bool readReady, bool packetReady)
+	void doPacketRead(bool readReady, NET_BUFFER_LIST* packet, const FWPS_INCOMING_METADATA_VALUES0* meta,
+		const UINT32* subinterfaceIdx)
 	{
 		if (readReady)
 			ioReadReady = true;
-		if (packetReady)
-			wfpPacketReady = true;
-		if (!ioReadReady || !wfpPacketReady)
-			return;
+		if (packet && meta) {
+			if (NET_BUFFER* nb = NET_BUFFER_LIST_FIRST_NB(packet)) {
+				ULONG dataLength = nb->DataLength;
+				if (void* packetData = storage.insert(dataLength, meta, subinterfaceIdx)) {
+					if (void* p = NdisGetDataBuffer(nb, dataLength, packetData, 1, 0)) {
+						if (p != packetData)
+							RtlCopyMemory(packetData, p, dataLength);
+					}
+				}
+			}
+		}
 		// Here, we have an IO read requests and a packet to be returned
-		// To get data from a NBL, use NdisGetDataBuffer
+		while (ioReadReady && !storage.empty()) {
+			WDFREQUEST request;
+			if (NTSTATUS status = WdfIoQueueRetrieveNextRequest(readQueue, &request); status != STATUS_SUCCESS) {
+				if (status == STATUS_NO_MORE_ENTRIES)
+					ioReadReady = false;
+				return;
+			}
+			storage.save();
+			PacketInfo* info = nullptr;
+			while (void* data = storage.get(info)) {
+				// TODO
+				storage.pop();
+			}
+		}
 	}
 
 	/*** Packet write processing ***************************************************/
@@ -185,9 +348,28 @@ namespace {
 			if (space->pool)
 				NdisFreeNetBufferListPool(space->pool);
 		}
+		storage.destroy();
 	}
 
-	void packetClassifyFn(const FWPS_INCOMING_VALUES0* inFixedValues, const FWPS_INCOMING_METADATA_VALUES0* /*inMetaValues*/,
+	const UINT32* getSubinterfaceIdx(const FWPS_INCOMING_VALUES0* inFixedValues) {
+		switch (inFixedValues->layerId) {
+		case FWPS_LAYER_INBOUND_IPPACKET_V4:
+		case FWPS_LAYER_INBOUND_IPPACKET_V6:
+			if (inFixedValues->valueCount <= FWPS_FIELD_INBOUND_IPPACKET_V4_SUB_INTERFACE_INDEX)
+				return nullptr;
+			{
+				FWP_VALUE0& val = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_IPPACKET_V4_SUB_INTERFACE_INDEX].value;
+				if (val.type != FWP_UINT32)
+					return nullptr;
+				return &val.uint32;
+			}
+			break;
+		default:
+			return nullptr;
+		}
+	}
+
+	void packetClassifyFn(const FWPS_INCOMING_VALUES0* inFixedValues, const FWPS_INCOMING_METADATA_VALUES0* inMetaValues,
 		void* layerData, [[maybe_unused]] const FWPS_FILTER0* filter, [[maybe_unused]] UINT64 flowContext,
 		FWPS_CLASSIFY_OUT0* classifyOut)
 	{
@@ -220,7 +402,8 @@ namespace {
 			classifyOut->actionType = FWP_ACTION_CONTINUE;
 			return;
 		}
-		// TODO
+		QueueLockGuard lock(readQueue);
+		doPacketRead(false, reinterpret_cast<NET_BUFFER_LIST*>(layerData), inMetaValues, getSubinterfaceIdx(inFixedValues));
 		// Consume the packet silently
 		classifyOut->actionType = FWP_ACTION_BLOCK;
 		classifyOut->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
@@ -262,7 +445,7 @@ namespace {
 
 	void EvtIoReadReady([[maybe_unused]] WDFQUEUE Queue, [[maybe_unused]] WDFCONTEXT Context)
 	{	
-		doPacketRead(true, false);
+		doPacketRead(true, nullptr, nullptr, nullptr);
 	}
 
 	void requestComplete(WDFREQUEST request, const char* msg, NTSTATUS status)
@@ -331,6 +514,9 @@ namespace {
 			DbgPrint("EvtDeviceAdd status=%ld\n", status);
 			return status;
 		}
+		// Initialize packet storage
+		if (NTSTATUS status = storage.init(); status != STATUS_SUCCESS)
+			return status;
 		// Create IO queues
 		WDF_IO_QUEUE_CONFIG qConfig;
 		WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&qAttr, QueueContextSpace);
