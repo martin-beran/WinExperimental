@@ -2,11 +2,11 @@
 
 #ifdef _KERNEL_MODE
 #include <ntddk.h>
-#include <ifdef.h>
 #else
 #include <Windows.h>
 #include <winioctl.h>
 #endif
+#include <ifdef.h>
 
 struct PacketDriverStats {
 	ULONGLONG receivedPackets = 0; // does not include dropped packets

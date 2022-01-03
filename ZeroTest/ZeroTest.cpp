@@ -146,7 +146,7 @@ int main(int argc, char* argv[])
 	auto beginTime = std::chrono::steady_clock::now();
 	std::vector<char> buffer(blockSize);
 	size_t expect = buffer.size();
-	if (max && max >= 0 && *max < expect)
+	if (max && max >= 0 && *max < decltype(*max)(expect))
 		expect = *max;
 	std::cout << "Running..." << std::endl;
 	for (unsigned long block = 0; block < blockCount; ++block) {
