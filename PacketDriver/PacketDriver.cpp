@@ -213,18 +213,52 @@ namespace {
 		}
 		// Here, we have an IO read requests and a packet to be returned
 		while (ioReadReady && !storage.empty()) {
+			// Get the next I/O request
 			WDFREQUEST request;
 			if (NTSTATUS status = WdfIoQueueRetrieveNextRequest(readQueue, &request); status != STATUS_SUCCESS) {
 				if (status == STATUS_NO_MORE_ENTRIES)
 					ioReadReady = false;
 				return;
 			}
+			// Compute how many packet fit into the request
+			void* buffer;
+			size_t bufsz;
+			// always return at least one packet plus the terminating PacketInfo (with size == 0)
+			if (WdfRequestRetrieveOutputBuffer(request, 2 * sizeof(PacketInfo), &buffer, &bufsz) != STATUS_SUCCESS) {
+				WdfRequestCompleteWithInformation(request, STATUS_UNSUCCESSFUL, 0);
+				continue;
+			}
+			size_t used = sizeof(PacketInfo); // terminating PacketInfo
 			storage.save();
 			PacketInfo* info = nullptr;
-			while (void* data = storage.get(info)) {
-				// TODO
+			size_t n = 0;
+			// The first packet in a request may be partial, others must fit as whole, or they are postponed to next requests
+			for (void* data;
+				(data = storage.get(info)) != nullptr && used + sizeof(PacketInfo) + (n == 0 ? 0 : info->size) <= bufsz;)
+			{
+				++n;
+				used += sizeof(PacketInfo);
+				used += min(info->size, bufsz - used);
 				storage.pop();
 			}
+			// Store packets into the request
+			storage.restore();
+			PacketInfo* bufPkt = reinterpret_cast<PacketInfo*>(buffer);
+			used = (n + 1) * sizeof(PacketInfo);
+			char* bufData = reinterpret_cast<char*>(buffer) + used;
+			for (size_t i = 0; i < n; ++i) {
+				void* data = storage.get(info);
+				bufPkt[i] = *info;
+				if (bufPkt->size > bufsz - used)
+					bufPkt[i].size = bufsz - used;
+				RtlCopyMemory(bufData, data, bufPkt[i].size);
+				used += bufPkt[i].size;
+				storage.pop();
+			}
+			// buffer overflow reported, but buffer has space for at least n + 1 PacketInfo structures
+#pragma warning(suppress: 6386)
+			bufPkt[n] = {};
+			WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, used);
 		}
 	}
 
