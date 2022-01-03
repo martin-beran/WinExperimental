@@ -477,10 +477,12 @@ namespace {
 		}
 		case IOCTL_PACKETDRIVER_RESET_STATS:
 			stats = {};
-		break; default:
+			break;
+		default:
 			WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 			break;
 		}
+		WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, transferred);
 	}
 
 	void EvtIoReadReady([[maybe_unused]] WDFQUEUE Queue, [[maybe_unused]] WDFCONTEXT Context)
