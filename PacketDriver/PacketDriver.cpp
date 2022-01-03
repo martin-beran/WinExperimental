@@ -366,17 +366,17 @@ namespace {
 		if (DeviceContextSpace* space = WdfObjectGet_DeviceContextSpace(device); space) {
 			if (space->calloutRegistered) {
 				if (NTSTATUS status = FwpsCalloutUnregisterById0(space->calloutId); status != STATUS_SUCCESS)
-					DbgPrint("FwpsCalloutUnregisterById0 status=%ld", status);
+					DbgPrint("FwpsCalloutUnregisterById0 status=%#lx", status);
 				space->calloutRegistered = false;
 			}
 			if (space->injectionHandleIpv4) {
 				if (NTSTATUS status = FwpsInjectionHandleDestroy0(*space->injectionHandleIpv4); status != STATUS_SUCCESS)
-					DbgPrint("FwpsInjectionHandleDestroy0(IPv4) status=%ld", status);
+					DbgPrint("FwpsInjectionHandleDestroy0(IPv4) status=%#lx", status);
 				space->injectionHandleIpv4 = nullptr;
 			}
 			if (space->injectionHandleIpv6) {
 				if (NTSTATUS status = FwpsInjectionHandleDestroy0(*space->injectionHandleIpv6); status != STATUS_SUCCESS)
-					DbgPrint("FwpsInjectionHandleDestroy0(IPv6) status=%ld", status);
+					DbgPrint("FwpsInjectionHandleDestroy0(IPv6) status=%#lx", status);
 				space->injectionHandleIpv6 = nullptr;
 			}
 			if (space->pool)
@@ -443,6 +443,12 @@ namespace {
 		classifyOut->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
 	}
 
+	NTSTATUS packetNotifyFn([[maybe_unused]] FWPS_CALLOUT_NOTIFY_TYPE notifyType, [[maybe_unused]] const GUID* filterKey,
+		[[maybe_unused]] FWPS_FILTER0* filter)
+	{
+		return STATUS_SUCCESS;
+	}
+
 	/*** Device IO callbacks *******************************************************/
 
 	void EvtIoDeviceControl([[maybe_unused]] WDFQUEUE Queue, WDFREQUEST Request, [[maybe_unused]] size_t OutputBufferLength,
@@ -455,12 +461,12 @@ namespace {
 		{
 			WDFMEMORY memory;
 			if (NTSTATUS status = WdfRequestRetrieveOutputMemory(Request, &memory); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_GET_STATS WdfRequestRetrieveInputMemory status=%ld", status);
+				DbgPrint("IOCTL_PACKETDRIVER_GET_STATS WdfRequestRetrieveInputMemory status=%#lx", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
 			if (NTSTATUS status = WdfMemoryCopyFromBuffer(memory, 0, &stats, sizeof(stats)); status != STATUS_SUCCESS) {
-				DbgPrint("IOCTL_PACKETDRIVER_GET_STATS WdfMemoryCopyFromBuffer status=%ld", status);
+				DbgPrint("IOCTL_PACKETDRIVER_GET_STATS WdfMemoryCopyFromBuffer status=%#lx", status);
 				WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
 				return;
 			}
@@ -485,7 +491,7 @@ namespace {
 	void requestComplete(WDFREQUEST request, const char* msg, NTSTATUS status)
 	{
 		if (status != STATUS_SUCCESS)
-			DbgPrint("%s status=%ld", msg, status);
+			DbgPrint("%s status=%#lx", msg, status);
 		WdfRequestCompleteWithInformation(request, status, 0);
 	}
 
@@ -533,7 +539,7 @@ namespace {
 		// Create device
 		DECLARE_CONST_UNICODE_STRING(deviceName, PACKETDRIVER_DEVICE);
 		if (NTSTATUS status = WdfDeviceInitAssignName(DeviceInit, &deviceName); status != STATUS_SUCCESS) {
-			DbgPrint("WdfDeviceInitAssignName status=%ld", status);
+			DbgPrint("WdfDeviceInitAssignName status=%#lx", status);
 			return status;
 		}
 		WDF_OBJECT_ATTRIBUTES qAttr;
@@ -545,7 +551,7 @@ namespace {
 		WdfDeviceInitSetIoTypeEx(DeviceInit, &ioConfig);
 		WDFDEVICE hDevice;
 		if (NTSTATUS status = WdfDeviceCreate(&DeviceInit, &qAttr, &hDevice); status != STATUS_SUCCESS) {
-			DbgPrint("EvtDeviceAdd status=%ld\n", status);
+			DbgPrint("EvtDeviceAdd status=%#lx\n", status);
 			return status;
 		}
 		// Initialize packet storage
@@ -560,39 +566,39 @@ namespace {
 		WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&qConfig, WdfIoQueueDispatchSequential);
 		qConfig.EvtIoDeviceControl = EvtIoDeviceControl;
 		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &ioctlQueue);	status != STATUS_SUCCESS) {
-			DbgPrint("WdfIoQueueCreate(device control) status=%ld", status);
+			DbgPrint("WdfIoQueueCreate(device control) status=%#lx", status);
 			return status;
 		}
 		WdfObjectGet_QueueContextSpace(ioctlQueue)->queue = &ioctlQueue;
 		// Create IO queue for reading packets
 		WDF_IO_QUEUE_CONFIG_INIT(&qConfig, WdfIoQueueDispatchManual);
 		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &readQueue);	status != STATUS_SUCCESS) {
-			DbgPrint("WdfIoQueueCreate(device control) status=%ld", status);
+			DbgPrint("WdfIoQueueCreate(device control) status=%#lx", status);
 			return status;
 		}
 		WdfObjectGet_QueueContextSpace(readQueue)->queue = &readQueue;
 		if (NTSTATUS status = WdfIoQueueReadyNotify(readQueue, EvtIoReadReady, nullptr); status != STATUS_SUCCESS) {
-			DbgPrint("WdfIoQueueReadyNotify(read) status=%ld", status);
+			DbgPrint("WdfIoQueueReadyNotify(read) status=%#lx", status);
 			return status;
 		}
 		if (NTSTATUS status = WdfDeviceConfigureRequestDispatching(hDevice, readQueue, WdfRequestTypeRead);
 			status != STATUS_SUCCESS)
 		{
-			DbgPrint("WdfDeviceConfigureRequestDispatching(read) status=%ld", status);
+			DbgPrint("WdfDeviceConfigureRequestDispatching(read) status=%#lx", status);
 			return status;
 		}
 		// Create IO queue for writing packets
 		WDF_IO_QUEUE_CONFIG_INIT(&qConfig, WdfIoQueueDispatchSequential);
 		qConfig.EvtIoWrite = EvtIoWrite;
 		if (NTSTATUS status = WdfIoQueueCreate(hDevice, &qConfig, &qAttr, &writeQueue);	status != STATUS_SUCCESS) {
-			DbgPrint("WdfIoQueueCreate(device control) status=%ld", status);
+			DbgPrint("WdfIoQueueCreate(device control) status=%#lx", status);
 			return status;
 		}
 		WdfObjectGet_QueueContextSpace(writeQueue)->queue = &writeQueue;
 		if (NTSTATUS status = WdfDeviceConfigureRequestDispatching(hDevice, writeQueue, WdfRequestTypeWrite);
 			status != STATUS_SUCCESS)
 		{
-			DbgPrint("WdfDeviceConfigureRequestDispatching(write) status=%ld", status);
+			DbgPrint("WdfDeviceConfigureRequestDispatching(write) status=%#lx", status);
 			return status;
 		}
 		// Initialize WFP callout
@@ -601,7 +607,7 @@ namespace {
 			PacketDriverCalloutGuid,
 			0,
 			packetClassifyFn,
-			nullptr,
+			packetNotifyFn,
 			nullptr
 		};
 		DeviceContextSpace* deviceContext = WdfObjectGet_DeviceContextSpace(hDevice);
@@ -609,21 +615,21 @@ namespace {
 		if (status == STATUS_SUCCESS &&
 			(status = FwpsCalloutRegister0(deviceObject, &callout, &deviceContext->calloutId)) != STATUS_SUCCESS)
 		{
-			DbgPrint("FwpsCalloutRegister0 status=%ld", status);
+			DbgPrint("FwpsCalloutRegister0 status=%#lx", status);
 		} else
 			deviceContext->calloutRegistered = true;
 		if (status == STATUS_SUCCESS &&
 			(status = FwpsInjectionHandleCreate0(AF_INET, FWPS_INJECTION_TYPE_NETWORK, &injectionHandleIpv4))
 			!= STATUS_SUCCESS)
 		{
-			DbgPrint("FwpsInjectionHandleCreate0(IPv4) status=%ld", status);
+			DbgPrint("FwpsInjectionHandleCreate0(IPv4) status=%#lx", status);
 		} else
 			deviceContext->injectionHandleIpv4 = &injectionHandleIpv4;
 		if (status == STATUS_SUCCESS &&
 			(status = FwpsInjectionHandleCreate0(AF_INET6, FWPS_INJECTION_TYPE_NETWORK, &injectionHandleIpv6))
 			!= STATUS_SUCCESS)
 		{
-			DbgPrint("FwpsInjectionHandleCreate0(IPv6) status=%ld", status);
+			DbgPrint("FwpsInjectionHandleCreate0(IPv6) status=%#lx", status);
 		} else
 			deviceContext->injectionHandleIpv6 = &injectionHandleIpv6;
 		NET_BUFFER_LIST_POOL_PARAMETERS poolParams;
@@ -656,7 +662,7 @@ extern "C" {
 		WDF_DRIVER_CONFIG config;
 		WDF_DRIVER_CONFIG_INIT(&config, EvtDeviceAdd);
 		NTSTATUS status = WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
-		DbgPrint("DriverEntry status=%ld\n", status);
+		DbgPrint("DriverEntry status=%#lx\n", status);
 		return status;
 	}
 }
