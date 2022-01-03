@@ -5,6 +5,7 @@
 #include <fwpmu.h>
 
 #include <atomic>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -33,7 +34,7 @@ public:
 int errorMessage(const char* msg, DWORD err)
 {
 	LPTSTR errMsg = nullptr;
-	std::wcerr << "ERROR " << err << ": " << msg;
+	std::wcerr << "ERROR 0x" << std::hex << err << std::dec << ": " << msg;
 	if (FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, nullptr, err,
 		LocaleNameToLCID(L"en-US", 0), reinterpret_cast<LPWSTR>(&errMsg), 0, nullptr) > 0)
 	{
@@ -54,7 +55,7 @@ template <class F, class ...A> void callWin(const char* msg, F&& f, A&& ...args)
 
 int fwpmError(const char* msg, DWORD result)
 {
-	std::cerr << "WFP ERROR " << result << "msg" << '\n';
+	std::cerr << "WFP ERROR 0x" << std::hex << result << std::dec << ": " << msg << '\n';
 	return EXIT_FAILURE;
 }
 
