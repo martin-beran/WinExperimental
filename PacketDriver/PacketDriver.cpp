@@ -264,7 +264,11 @@ namespace {
 
 	/*** Packet write processing ***************************************************/
 
-	// Require holding writeQueue lock
+	// Require holding ioctlQueue lock
+	// This requirement is a bit weird, but we need ioctlQueue lock nearby anyway in order to modify stats.
+	// We cannot use writeQueue lock, because injectComplete() can be called synchronously by FwpsInjectNetworkSendAsync0()
+	// or FwpsInjectNetworkReceiveAsync0(), called from doPacketWrite() while already holding the writeQueue lock.
+	// A double-lock triggers a bug-check (BSOD).
 	ULONGLONG writingPackets = 0;
 	ULONGLONG writingBytes = 0;
 	
@@ -281,9 +285,6 @@ namespace {
 			QueueLockGuard lock(ioctlQueue);
 			++stats.sentPackets;
 			stats.sentBytes += dataLength;
-		}
-		{
-			QueueLockGuard lock(writeQueue);
 			// Do not block sending more packets if there is a bug causing a bad value of writingPackets or writingBytes
 			if (writingPackets > 0)
 				--writingPackets;
@@ -298,10 +299,14 @@ namespace {
 	// Called with holding writeQueue lock
 	void doPacketWrite(PacketInfo& info, char* data)
 	{
-		if (writingPackets >= maxWriteStoredPackets || writingBytes + info.size > maxWriteStoredBytes) {
+		{
 			QueueLockGuard lock(ioctlQueue);
-			++stats.sentDroppedPackets;
-			return;
+			if (writingPackets >= maxWriteStoredPackets || writingBytes + info.size > maxWriteStoredBytes) {
+				++stats.sentDroppedPackets;
+				return;
+			}
+			++writingPackets;
+			writingBytes += info.size;
 		}
 		void* buffer = ExAllocatePool2(POOL_FLAG_NON_PAGED, info.size, PACKETDRIVER_TAG);
 		MDL* mdl = nullptr;
@@ -335,10 +340,13 @@ namespace {
 		default:
 			goto fail;
 		}
-		++writingPackets;
-		writingBytes += info.size;
 		return;
 	fail:
+		{
+			QueueLockGuard lock(ioctlQueue);
+			--writingPackets;
+			writingBytes -= info.size;
+		}
 		if (bufferList)
 			FwpsFreeNetBufferList0(bufferList);
 		if (mdl)
