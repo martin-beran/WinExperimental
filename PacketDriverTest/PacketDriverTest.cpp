@@ -83,6 +83,11 @@ BOOL terminateHandler([[maybe_unused]] DWORD ctrlType)
 	terminateFlag = true;
 	while (!terminateConfirm)
 		CancelIoEx(fh, nullptr);
+	return TRUE;
+}
+
+void printStats()
+{
 	std::cout << "User stats:\n" <<
 		"packets=" << stats.packets.load() << '\n' <<
 		"bytes=" << stats.bytes.load() << std::endl;
@@ -102,7 +107,6 @@ BOOL terminateHandler([[maybe_unused]] DWORD ctrlType)
 			"sentDroppedPackets=" << driverStats.sentDroppedPackets << '\n' <<
 			std::endl;
 	}
-	return FALSE;
 }
 
 int main()
@@ -188,8 +192,10 @@ try {
 	}
 	terminateConfirm = true;
 	// Finish
+	printStats();
     return EXIT_SUCCESS;
 } catch (const WindowsError& e) {
 	std::cerr << e.what() << "caught, exiting" << '\n';
+	printStats();
 	return EXIT_FAILURE;
 }
