@@ -629,7 +629,7 @@ namespace {
 			deviceContext->inboundCalloutRegistered = true;
 		callout.calloutKey = PacketDriverOutboundCalloutGuid;
 		if (status == STATUS_SUCCESS &&
-			(status = FwpsCalloutRegister0(deviceObject, &callout, &deviceContext->inboundCalloutId)) != STATUS_SUCCESS)
+			(status = FwpsCalloutRegister0(deviceObject, &callout, &deviceContext->outboundCalloutId)) != STATUS_SUCCESS)
 		{
 			DbgPrint("FwpsCalloutRegister0 outbound status=%#lx", status);
 		} else
