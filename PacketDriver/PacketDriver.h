@@ -26,11 +26,18 @@ struct PacketDriverStats {
 #endif
 #define PACKETDRIVER_DEVICE_TYPE FILE_DEVICE_UNKNOWN
 
-constexpr GUID PacketDriverCalloutGuid = {
+constexpr GUID PacketDriverInboundCalloutGuid = {
 	0x0e0b747f,
 	0x570c,
 	0x47c7,
 	{0xb8, 0x03, 0x0e, 0x2b, 0x05, 0xe8, 0x77, 0x3c}
+};
+
+constexpr GUID PacketDriverOutboundCalloutGuid = {
+	0xa0875077,
+	0x9ceb,
+	0x479e,
+	{0x98, 0x08, 0x6a, 0x69, 0x62, 0xb0, 0xfa, 0x98}
 };
 
 constexpr size_t maxReadStoredPackets = 1000;

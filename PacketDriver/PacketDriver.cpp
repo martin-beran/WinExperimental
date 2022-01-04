@@ -352,8 +352,10 @@ namespace {
 	/*** WFP callout handler *******************************************************/
 
 	struct DeviceContextSpace {
-		bool calloutRegistered;
-		UINT32 calloutId;
+		bool inboundCalloutRegistered;
+		UINT32 inboundCalloutId;
+		bool outboundCalloutRegistered;
+		UINT32 outboundCalloutId;
 		HANDLE* injectionHandleIpv4;
 		HANDLE* injectionHandleIpv6;
 		NDIS_HANDLE pool = nullptr;
@@ -364,10 +366,15 @@ namespace {
 	{
 		DbgPrint("DeviceDestroyCallback");
 		if (DeviceContextSpace* space = WdfObjectGet_DeviceContextSpace(device); space) {
-			if (space->calloutRegistered) {
-				if (NTSTATUS status = FwpsCalloutUnregisterById0(space->calloutId); status != STATUS_SUCCESS)
-					DbgPrint("FwpsCalloutUnregisterById0 status=%#lx", status);
-				space->calloutRegistered = false;
+			if (space->inboundCalloutRegistered) {
+				if (NTSTATUS status = FwpsCalloutUnregisterById0(space->inboundCalloutId); status != STATUS_SUCCESS)
+					DbgPrint("FwpsCalloutUnregisterById0 inbound status=%#lx", status);
+				space->inboundCalloutRegistered = false;
+			}
+			if (space->outboundCalloutRegistered) {
+				if (NTSTATUS status = FwpsCalloutUnregisterById0(space->outboundCalloutId); status != STATUS_SUCCESS)
+					DbgPrint("FwpsCalloutUnregisterById0 outbound status=%#lx", status);
+				space->outboundCalloutRegistered = false;
 			}
 			if (space->injectionHandleIpv4) {
 				if (NTSTATUS status = FwpsInjectionHandleDestroy0(*space->injectionHandleIpv4); status != STATUS_SUCCESS)
@@ -606,7 +613,7 @@ namespace {
 		// Initialize WFP callout
 		PDEVICE_OBJECT deviceObject = WdfDeviceWdmGetDeviceObject(hDevice);
 		FWPS_CALLOUT0 callout{
-			PacketDriverCalloutGuid,
+			PacketDriverInboundCalloutGuid,
 			0,
 			packetClassifyFn,
 			packetNotifyFn,
@@ -615,11 +622,18 @@ namespace {
 		DeviceContextSpace* deviceContext = WdfObjectGet_DeviceContextSpace(hDevice);
 		NTSTATUS status = STATUS_SUCCESS;
 		if (status == STATUS_SUCCESS &&
-			(status = FwpsCalloutRegister0(deviceObject, &callout, &deviceContext->calloutId)) != STATUS_SUCCESS)
+			(status = FwpsCalloutRegister0(deviceObject, &callout, &deviceContext->inboundCalloutId)) != STATUS_SUCCESS)
 		{
-			DbgPrint("FwpsCalloutRegister0 status=%#lx", status);
+			DbgPrint("FwpsCalloutRegister0 inbound status=%#lx", status);
 		} else
-			deviceContext->calloutRegistered = true;
+			deviceContext->inboundCalloutRegistered = true;
+		callout.calloutKey = PacketDriverOutboundCalloutGuid;
+		if (status == STATUS_SUCCESS &&
+			(status = FwpsCalloutRegister0(deviceObject, &callout, &deviceContext->inboundCalloutId)) != STATUS_SUCCESS)
+		{
+			DbgPrint("FwpsCalloutRegister0 outbound status=%#lx", status);
+		} else
+			deviceContext->outboundCalloutRegistered = true;
 		if (status == STATUS_SUCCESS &&
 			(status = FwpsInjectionHandleCreate0(AF_INET, FWPS_INJECTION_TYPE_NETWORK, &injectionHandleIpv4))
 			!= STATUS_SUCCESS)

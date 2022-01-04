@@ -135,6 +135,16 @@ try {
 	sublayer.providerKey = const_cast<GUID*>(&providerKeyGuid);
 	sublayer.weight = 0x8000;
 	callFwpm("FwpmSublayerAdd0 failed", FwpmSubLayerAdd0, engine, &sublayer, nullptr);
+	FWPM_CALLOUT0 callout{};
+	callout.calloutKey = PacketDriverInboundCalloutGuid;
+	callout.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest inbound callout");
+	callout.providerKey = const_cast<GUID*>(&providerKeyGuid);
+	callout.applicableLayer = FWPM_LAYER_INBOUND_IPPACKET_V4;
+	callFwpm("FwpmCalloutAdd0 inbound failed", FwpmCalloutAdd0, engine, &callout, nullptr, nullptr);
+	callout.calloutKey = PacketDriverOutboundCalloutGuid;
+	callout.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest outbound callout");
+	callout.applicableLayer = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
+	callFwpm("FwpmCalloutAdd0 outbound failed", FwpmCalloutAdd0, engine, &callout, nullptr, nullptr);
 	FWPM_FILTER0 filter{};
 	filter.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest filter");
 	filter.flags = FWPM_FILTER_FLAG_PERMIT_IF_CALLOUT_UNREGISTERED;
@@ -144,9 +154,10 @@ try {
 	filter.weight.type = FWP_EMPTY;
 	filter.numFilterConditions = 0;
 	filter.action.type = FWP_ACTION_CALLOUT_UNKNOWN;
-	filter.action.calloutKey = PacketDriverCalloutGuid;
+	filter.action.calloutKey = PacketDriverInboundCalloutGuid;
 	callFwpm("FwpmFilterAdd0 inbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
 	filter.layerKey = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
+	filter.action.calloutKey = PacketDriverOutboundCalloutGuid;
 	callFwpm("FwpmFilterAdd0 outbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
 	// Process packets
 	std::vector<char> buffer(bufferSize);
