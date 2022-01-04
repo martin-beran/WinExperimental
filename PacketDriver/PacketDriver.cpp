@@ -113,14 +113,14 @@ namespace {
 				}
 			}
 		}
-		void* insert(size_t sz, const FWPS_INCOMING_METADATA_VALUES0* meta, const UINT32* subinterfaceIdx) {
+		void* insert(size_t sz, const FWPS_INCOMING_METADATA_VALUES0* meta, const UINT32* subinterfaceIdx,
+			PacketInfo::Direction direction)
+		{
 			if (sz > storedBytes)
 				return nullptr; // packet does not fit to the data buffer
-			PacketInfo::Direction direction =
-				meta->packetDirection == FWP_DIRECTION_OUTBOUND ? PacketInfo::Send : PacketInfo::Receive;
 			if ((meta->currentMetadataValues & neededMetadata) != neededMetadata)
 				return nullptr; // not all required metadata are available
-			if (direction == FWP_DIRECTION_INBOUND)
+			if (direction == PacketInfo::Receive)
 				if ((meta->currentMetadataValues & FWPS_METADATA_FIELD_SOURCE_INTERFACE_INDEX) !=
 					FWPS_METADATA_FIELD_SOURCE_INTERFACE_INDEX ||
 					!subinterfaceIdx)
@@ -176,7 +176,7 @@ namespace {
 			popDataIdx = savedPopDataIdx;
 		}
 	private:
-		static constexpr UINT32 neededMetadata = FWPS_METADATA_FIELD_PACKET_DIRECTION | FWPS_METADATA_FIELD_COMPARTMENT_ID;
+		static constexpr UINT32 neededMetadata = FWPS_METADATA_FIELD_COMPARTMENT_ID;
 		size_t storedPackets = maxReadStoredPackets;
 		size_t storedBytes = maxReadStoredBytes;
 		PacketInfo* info[2] = {nullptr, nullptr};
@@ -196,14 +196,14 @@ namespace {
 
 	// Must be called with locked synchronization lock of readQueue
 	void doPacketRead(bool readReady, NET_BUFFER_LIST* packet, const FWPS_INCOMING_METADATA_VALUES0* meta,
-		const UINT32* subinterfaceIdx)
+		const UINT32* subinterfaceIdx, PacketInfo::Direction direction)
 	{
 		if (readReady)
 			ioReadReady = true;
 		if (packet && meta) {
 			if (NET_BUFFER* nb = NET_BUFFER_LIST_FIRST_NB(packet)) {
 				ULONG dataLength = nb->DataLength;
-				if (void* packetData = storage.insert(dataLength, meta, subinterfaceIdx)) {
+				if (void* packetData = storage.insert(dataLength, meta, subinterfaceIdx, direction)) {
 					if (void* p = NdisGetDataBuffer(nb, dataLength, packetData, 1, 0)) {
 						if (p != packetData)
 							RtlCopyMemory(packetData, p, dataLength);
@@ -412,7 +412,7 @@ namespace {
 
 	void packetClassifyFn(const FWPS_INCOMING_VALUES0* inFixedValues, const FWPS_INCOMING_METADATA_VALUES0* inMetaValues,
 		void* layerData, [[maybe_unused]] const FWPS_FILTER0* filter, [[maybe_unused]] UINT64 flowContext,
-		FWPS_CLASSIFY_OUT0* classifyOut)
+		FWPS_CLASSIFY_OUT0* classifyOut, PacketInfo::Direction direction)
 	{
 		if ((classifyOut->rights & FWPS_RIGHT_ACTION_WRITE) == 0) // Cannot modify verdict
 			return;
@@ -444,10 +444,25 @@ namespace {
 			return;
 		}
 		QueueLockGuard lock(readQueue);
-		doPacketRead(false, reinterpret_cast<NET_BUFFER_LIST*>(layerData), inMetaValues, getSubinterfaceIdx(inFixedValues));
+		doPacketRead(false, reinterpret_cast<NET_BUFFER_LIST*>(layerData), inMetaValues, getSubinterfaceIdx(inFixedValues),
+			direction);
 		// Consume the packet silently
 		classifyOut->actionType = FWP_ACTION_BLOCK;
 		classifyOut->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
+	}
+
+	void packetClassifyFnInbound(const FWPS_INCOMING_VALUES0* inFixedValues,
+		const FWPS_INCOMING_METADATA_VALUES0* inMetaValues, void* layerData, const FWPS_FILTER0* filter, UINT64 flowContext,
+		FWPS_CLASSIFY_OUT0* classifyOut)
+	{
+		packetClassifyFn(inFixedValues, inMetaValues, layerData, filter, flowContext, classifyOut, PacketInfo::Receive);
+	}
+
+	void packetClassifyFnOutbound(const FWPS_INCOMING_VALUES0* inFixedValues,
+		const FWPS_INCOMING_METADATA_VALUES0* inMetaValues, void* layerData, const FWPS_FILTER0* filter, UINT64 flowContext,
+		FWPS_CLASSIFY_OUT0* classifyOut)
+	{
+		packetClassifyFn(inFixedValues, inMetaValues, layerData, filter, flowContext, classifyOut, PacketInfo::Send);
 	}
 
 	NTSTATUS packetNotifyFn([[maybe_unused]] FWPS_CALLOUT_NOTIFY_TYPE notifyType, [[maybe_unused]] const GUID* filterKey,
@@ -493,8 +508,8 @@ namespace {
 	}
 
 	void EvtIoReadReady([[maybe_unused]] WDFQUEUE Queue, [[maybe_unused]] WDFCONTEXT Context)
-	{	
-		doPacketRead(true, nullptr, nullptr, nullptr);
+	{
+		doPacketRead(true, nullptr, nullptr, nullptr, PacketInfo::Receive);
 	}
 
 	void requestComplete(WDFREQUEST request, const char* msg, NTSTATUS status)
@@ -586,7 +601,8 @@ namespace {
 			return status;
 		}
 		WdfObjectGet_QueueContextSpace(readQueue)->queue = &readQueue;
-		if (NTSTATUS status = WdfIoQueueReadyNotify(readQueue, EvtIoReadReady, nullptr); status != STATUS_SUCCESS) {
+		// The third parameter is unused by EvtIoReadReady, but documentation does not say clearly if it can be NULL
+		if (NTSTATUS status = WdfIoQueueReadyNotify(readQueue, EvtIoReadReady, &readQueue); status != STATUS_SUCCESS) {
 			DbgPrint("WdfIoQueueReadyNotify(read) status=%#lx", status);
 			return status;
 		}
@@ -615,7 +631,7 @@ namespace {
 		FWPS_CALLOUT0 callout{
 			PacketDriverInboundCalloutGuid,
 			0,
-			packetClassifyFn,
+			packetClassifyFnInbound,
 			packetNotifyFn,
 			nullptr
 		};
@@ -628,6 +644,7 @@ namespace {
 		} else
 			deviceContext->inboundCalloutRegistered = true;
 		callout.calloutKey = PacketDriverOutboundCalloutGuid;
+		callout.classifyFn = packetClassifyFnOutbound;
 		if (status == STATUS_SUCCESS &&
 			(status = FwpsCalloutRegister0(deviceObject, &callout, &deviceContext->outboundCalloutId)) != STATUS_SUCCESS)
 		{
