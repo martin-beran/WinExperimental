@@ -330,7 +330,8 @@ namespace {
 		mdl = IoAllocateMdl(buffer, static_cast<ULONG>(info.size), false, false, nullptr);
 		if (!mdl)
 			goto fail;
-		if (FwpsAllocateNetBufferAndNetBufferList0(pool, 0, 0, mdl, 0, 0, &bufferList) != STATUS_SUCCESS)
+		MmBuildMdlForNonPagedPool(mdl);
+		if (FwpsAllocateNetBufferAndNetBufferList0(pool, 0, 0, mdl, 0, info.size, &bufferList) != STATUS_SUCCESS)
 			goto fail;
 		mdl = nullptr;
 		buffer = nullptr;
