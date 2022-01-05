@@ -178,6 +178,7 @@ try {
 		for (PacketInfo* p = reinterpret_cast<PacketInfo*>(buffer.data()); p->size > 0; ++p) {
 			++packets;
 			bytes += p->size;
+			std::cout << (p->direction == PacketInfo::Send ? "-> " : "<- ") << p->size << std::endl;
 		}
 		stats.packets += packets;
 		stats.bytes += bytes;
@@ -189,6 +190,7 @@ try {
 				errorMessage("WriteFile failed", error);
 			break;
 		}
+		std::cout << "written" << std::endl;
 	}
 	terminateConfirm = true;
 	// Finish

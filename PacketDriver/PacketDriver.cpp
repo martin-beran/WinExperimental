@@ -134,6 +134,10 @@ namespace {
 					popPacketIdx = 0;
 					popDataIdx = 0;
 				}
+				{
+					QueueLockGuard lock(ioctlQueue);
+					stats.receivedDroppedPackets += count[pushSelect];
+				}
 				count[pushSelect] = 0;
 				pushDataIdx = 0;
 			}
@@ -212,13 +216,15 @@ namespace {
 			}
 		}
 		// Here, we have an IO read requests and a packet to be returned
+		ULONGLONG receivedPackets = 0;
+		ULONGLONG receivedBytes = 0;
 		while (ioReadReady && !storage.empty()) {
 			// Get the next I/O request
 			WDFREQUEST request;
 			if (NTSTATUS status = WdfIoQueueRetrieveNextRequest(readQueue, &request); status != STATUS_SUCCESS) {
 				if (status == STATUS_NO_MORE_ENTRIES)
 					ioReadReady = false;
-				return;
+				break;
 			}
 			// Compute how many packet fit into the request
 			void* buffer;
@@ -249,6 +255,7 @@ namespace {
 			for (size_t i = 0; i < n; ++i) {
 				void* data = storage.get(info);
 				bufPkt[i] = *info;
+				receivedBytes += bufPkt->size;
 				if (bufPkt->size > bufsz - used)
 					bufPkt[i].size = bufsz - used;
 				RtlCopyMemory(bufData, data, bufPkt[i].size);
@@ -258,7 +265,13 @@ namespace {
 			// buffer overflow reported, but buffer has space for at least n + 1 PacketInfo structures
 #pragma warning(suppress: 6386)
 			bufPkt[n] = {};
+			receivedPackets += n;
 			WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, used);
+		}
+		if (receivedPackets != 0 || receivedBytes != 0) {
+			QueueLockGuard lock(ioctlQueue);
+			stats.receivedPackets += receivedPackets;
+			stats.receivedBytes += receivedBytes;
 		}
 	}
 
