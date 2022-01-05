@@ -52,7 +52,7 @@ constexpr size_t maxWriteStoredBytes = 1500 * maxWriteStoredPackets;
  * +---------------+---------------+-----+---------------+-----------+-----------+-----+---------------+
  */
 struct PacketInfo {
-	enum Direction {
+	enum class Direction {
 		Send,
 		Receive,
 	};

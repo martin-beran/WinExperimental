@@ -160,6 +160,7 @@ try {
 	filter.action.type = FWP_ACTION_CALLOUT_UNKNOWN;
 	filter.action.calloutKey = PacketDriverInboundCalloutGuid;
 	callFwpm("FwpmFilterAdd0 inbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
+	filter.filterKey = {};
 	filter.layerKey = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
 	filter.action.calloutKey = PacketDriverOutboundCalloutGuid;
 	callFwpm("FwpmFilterAdd0 outbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
@@ -178,7 +179,7 @@ try {
 		for (PacketInfo* p = reinterpret_cast<PacketInfo*>(buffer.data()); p->size > 0; ++p) {
 			++packets;
 			bytes += p->size;
-			std::cout << (p->direction == PacketInfo::Send ? "-> " : "<- ") << p->size << std::endl;
+			std::cout << (p->direction == PacketInfo::Direction::Send ? "-> " : "<- ") << p->size << std::endl;
 		}
 		stats.packets += packets;
 		stats.bytes += bytes;

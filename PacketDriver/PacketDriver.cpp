@@ -113,17 +113,17 @@ namespace {
 				}
 			}
 		}
-		void* insert(size_t sz, const FWPS_INCOMING_METADATA_VALUES0* meta, const UINT32* subinterfaceIdx,
-			PacketInfo::Direction direction)
+		void* insert(size_t sz, const FWPS_INCOMING_METADATA_VALUES0* meta, const UINT32* interfaceIdx,
+			const UINT32* subinterfaceIdx, PacketInfo::Direction direction)
 		{
 			if (sz > storedBytes)
 				return nullptr; // packet does not fit to the data buffer
 			if ((meta->currentMetadataValues & neededMetadata) != neededMetadata)
 				return nullptr; // not all required metadata are available
-			if (direction == PacketInfo::Receive)
-				if ((meta->currentMetadataValues & FWPS_METADATA_FIELD_SOURCE_INTERFACE_INDEX) !=
-					FWPS_METADATA_FIELD_SOURCE_INTERFACE_INDEX ||
-					!subinterfaceIdx)
+			if (direction == PacketInfo::Direction::Receive)
+				if ((meta->currentMetadataValues & FWPS_METADATA_FIELD_IP_HEADER_SIZE) !=
+					FWPS_METADATA_FIELD_IP_HEADER_SIZE ||
+					!interfaceIdx || !subinterfaceIdx)
 				{
 					return nullptr; // not all required metadata are available
 				}
@@ -144,7 +144,7 @@ namespace {
 			PacketInfo& pi = info[pushSelect][count[pushSelect]];
 			pi.direction = direction;
 			pi.compartment = static_cast<COMPARTMENT_ID>(meta->compartmentId);
-			pi.interfaceIdx = meta->sourceInterfaceIndex;
+			pi.interfaceIdx = IF_INDEX(interfaceIdx ? *interfaceIdx : 0);
 			pi.subinterfaceIdx = IF_INDEX(subinterfaceIdx ? *subinterfaceIdx : 0);
 			pi.size = sz;
 			void* result = data[pushSelect] + pushDataIdx;
@@ -200,14 +200,14 @@ namespace {
 
 	// Must be called with locked synchronization lock of readQueue
 	void doPacketRead(bool readReady, NET_BUFFER_LIST* packet, const FWPS_INCOMING_METADATA_VALUES0* meta,
-		const UINT32* subinterfaceIdx, PacketInfo::Direction direction)
+		const UINT32*interfaceIdx, const UINT32* subinterfaceIdx, PacketInfo::Direction direction)
 	{
 		if (readReady)
 			ioReadReady = true;
 		if (packet && meta) {
 			if (NET_BUFFER* nb = NET_BUFFER_LIST_FIRST_NB(packet)) {
 				ULONG dataLength = nb->DataLength;
-				if (void* packetData = storage.insert(dataLength, meta, subinterfaceIdx, direction)) {
+				if (void* packetData = storage.insert(dataLength, meta, interfaceIdx, subinterfaceIdx, direction)) {
 					if (void* p = NdisGetDataBuffer(nb, dataLength, packetData, 1, 0)) {
 						if (p != packetData)
 							RtlCopyMemory(packetData, p, dataLength);
@@ -337,14 +337,14 @@ namespace {
 		buffer = nullptr;
 		// TODO injection of IPv6 via injectionHandleIpv6
 		switch (info.direction) {
-		case PacketInfo::Send:
+		case PacketInfo::Direction::Send:
 			if (FwpsInjectNetworkSendAsync0(injectionHandleIpv4, nullptr, 0, info.compartment, bufferList,
 				injectComplete, nullptr) != STATUS_SUCCESS)
 			{
 				goto fail;
 			}
 			break;
-		case PacketInfo::Receive:
+		case PacketInfo::Direction::Receive:
 			if (FwpsInjectNetworkReceiveAsync0(injectionHandleIpv4, nullptr, 0, info.compartment, info.interfaceIdx,
 				info.subinterfaceIdx, bufferList, injectComplete, nullptr) != STATUS_SUCCESS)
 			{
@@ -414,22 +414,35 @@ namespace {
 		storage.destroy();
 	}
 
-	const UINT32* getSubinterfaceIdx(const FWPS_INCOMING_VALUES0* inFixedValues) {
+	const UINT32* getIncomingValue(const FWPS_INCOMING_VALUES0* inFixedValues, FWPS_FIELDS_INBOUND_IPPACKET_V4 field)
+	{
 		switch (inFixedValues->layerId) {
 		case FWPS_LAYER_INBOUND_IPPACKET_V4:
-		case FWPS_LAYER_INBOUND_IPPACKET_V6:
-			if (inFixedValues->valueCount <= FWPS_FIELD_INBOUND_IPPACKET_V4_SUB_INTERFACE_INDEX)
+			if (inFixedValues->valueCount <= size_t(field))
 				return nullptr;
 			{
-				FWP_VALUE0& val = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_IPPACKET_V4_SUB_INTERFACE_INDEX].value;
+				FWP_VALUE0& val = inFixedValues->incomingValue[field].value;
 				if (val.type != FWP_UINT32)
 					return nullptr;
 				return &val.uint32;
 			}
 			break;
+		case FWPS_LAYER_INBOUND_IPPACKET_V6:
+			// TODO
+			return nullptr;
 		default:
 			return nullptr;
 		}
+	}
+
+	const UINT32* getInterfaceIdx(const FWPS_INCOMING_VALUES0* inFixedValues)
+	{
+		return getIncomingValue(inFixedValues, FWPS_FIELD_INBOUND_IPPACKET_V4_INTERFACE_INDEX);
+	}
+
+	const UINT32* getSubinterfaceIdx(const FWPS_INCOMING_VALUES0* inFixedValues)
+	{
+		return getIncomingValue(inFixedValues, FWPS_FIELD_INBOUND_IPPACKET_V4_SUB_INTERFACE_INDEX);
 	}
 
 	void packetClassifyFn(const FWPS_INCOMING_VALUES0* inFixedValues, const FWPS_INCOMING_METADATA_VALUES0* inMetaValues,
@@ -443,17 +456,16 @@ namespace {
 			classifyOut->actionType = FWP_ACTION_CONTINUE;
 			return;
 		}
+		NET_BUFFER_LIST* nbl = reinterpret_cast<NET_BUFFER_LIST*>(layerData);
 		FWPS_PACKET_INJECTION_STATE injectionState = FWPS_PACKET_NOT_INJECTED;
 		switch (inFixedValues->layerId) {
 		case FWPS_LAYER_INBOUND_IPPACKET_V4:
 		case FWPS_LAYER_OUTBOUND_IPPACKET_V4:
-			injectionState = FwpsQueryPacketInjectionState0(injectionHandleIpv4,
-				reinterpret_cast<const NET_BUFFER_LIST*>(layerData), nullptr);
+			injectionState = FwpsQueryPacketInjectionState0(injectionHandleIpv4, nbl, nullptr);
 			break;
 		case FWPS_LAYER_INBOUND_IPPACKET_V6:
 		case FWPS_LAYER_OUTBOUND_IPPACKET_V6:
-			injectionState = FwpsQueryPacketInjectionState0(injectionHandleIpv6,
-				reinterpret_cast<const NET_BUFFER_LIST*>(layerData), nullptr);
+			injectionState = FwpsQueryPacketInjectionState0(injectionHandleIpv6, nbl, nullptr);
 			break;
 		default:
 			// Unsupported layer
@@ -465,9 +477,18 @@ namespace {
 			classifyOut->actionType = FWP_ACTION_CONTINUE;
 			return;
 		}
+		if (direction == PacketInfo::Direction::Receive) {
+			if ((inMetaValues->currentMetadataValues & FWPS_METADATA_FIELD_IP_HEADER_SIZE) !=
+				FWPS_METADATA_FIELD_IP_HEADER_SIZE)
+			{
+				return;
+			}
+			NdisRetreatNetBufferListDataStart(nbl, inMetaValues->ipHeaderSize, 0, nullptr, nullptr);
+		}
 		QueueLockGuard lock(readQueue);
-		doPacketRead(false, reinterpret_cast<NET_BUFFER_LIST*>(layerData), inMetaValues, getSubinterfaceIdx(inFixedValues),
-			direction);
+		doPacketRead(false, nbl, inMetaValues,getInterfaceIdx(inFixedValues), getSubinterfaceIdx(inFixedValues), direction);
+		if (direction == PacketInfo::Direction::Receive)
+			NdisAdvanceNetBufferListDataStart(nbl, inMetaValues->ipHeaderSize, false, nullptr);
 		// Consume the packet silently
 		classifyOut->actionType = FWP_ACTION_BLOCK;
 		classifyOut->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
@@ -477,14 +498,16 @@ namespace {
 		const FWPS_INCOMING_METADATA_VALUES0* inMetaValues, void* layerData, const FWPS_FILTER0* filter, UINT64 flowContext,
 		FWPS_CLASSIFY_OUT0* classifyOut)
 	{
-		packetClassifyFn(inFixedValues, inMetaValues, layerData, filter, flowContext, classifyOut, PacketInfo::Receive);
+		packetClassifyFn(inFixedValues, inMetaValues, layerData, filter, flowContext, classifyOut,
+			PacketInfo::Direction::Receive);
 	}
 
 	void packetClassifyFnOutbound(const FWPS_INCOMING_VALUES0* inFixedValues,
 		const FWPS_INCOMING_METADATA_VALUES0* inMetaValues, void* layerData, const FWPS_FILTER0* filter, UINT64 flowContext,
 		FWPS_CLASSIFY_OUT0* classifyOut)
 	{
-		packetClassifyFn(inFixedValues, inMetaValues, layerData, filter, flowContext, classifyOut, PacketInfo::Send);
+		packetClassifyFn(inFixedValues, inMetaValues, layerData, filter, flowContext, classifyOut,
+			PacketInfo::Direction::Send);
 	}
 
 	NTSTATUS packetNotifyFn([[maybe_unused]] FWPS_CALLOUT_NOTIFY_TYPE notifyType, [[maybe_unused]] const GUID* filterKey,
@@ -531,7 +554,7 @@ namespace {
 
 	void EvtIoReadReady([[maybe_unused]] WDFQUEUE Queue, [[maybe_unused]] WDFCONTEXT Context)
 	{
-		doPacketRead(true, nullptr, nullptr, nullptr, PacketInfo::Receive);
+		doPacketRead(true, nullptr, nullptr, nullptr, nullptr, PacketInfo::Direction::Receive);
 	}
 
 	void requestComplete(WDFREQUEST request, const char* msg, NTSTATUS status)
