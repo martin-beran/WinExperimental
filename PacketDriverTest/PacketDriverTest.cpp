@@ -10,6 +10,12 @@
 #include <stdexcept>
 #include <vector>
 
+// Operation mode
+enum class Mode {
+	Watch, // passive, only reading copies of packets
+	Filter, // active, can pass, block, or modify packets
+};
+
 // eeadda4d-dc1b-4b94-8da3-3048437e3292
 constexpr GUID providerKeyGuid = {
 	0xeeadda4d,
@@ -109,8 +115,16 @@ void printStats()
 	}
 }
 
-int main()
+int main(int argc, char* argv[])
 try {
+	Mode mode = Mode::Watch;
+	if (argc > 1) {
+		using namespace std::string_literals;
+		if (argv[1] == "watch"s)
+			mode = Mode::Watch;
+		else if (argv[1] == "filter"s)
+			mode = Mode::Filter;
+	}
 	// Parameters
 	size_t bufferSize = 10 * (sizeof(PacketInfo) + 1500) + sizeof(PacketInfo); // space for 10 packets
     // Open device
@@ -118,6 +132,11 @@ try {
 		nullptr);
 	if (fh == INVALID_HANDLE_VALUE)
 		return errorMessage("Cannot open device", GetLastError());
+	if (DWORD ret; !DeviceIoControl(fh, mode == Mode::Watch ? IOCTL_PACKETDRIVER_WATCH : IOCTL_PACKETDRIVER_FILTER,
+		nullptr, 0, nullptr, 0, &ret, nullptr))
+	{
+		return errorMessage("IOCTL_PACKETDRIVER_{WATCH|FILTER} failed", GetLastError());
+	}
 	if (DWORD ret; !DeviceIoControl(fh, IOCTL_PACKETDRIVER_RESET_STATS, nullptr, 0, nullptr, 0, &ret, nullptr))
 		return errorMessage("IOCTL_PACKETDRIVER_RESET_STATS failed", GetLastError());
 	if (!SetConsoleCtrlHandler(terminateHandler, true))
@@ -186,12 +205,12 @@ try {
 		terminateConfirm = false;
 		if (terminateFlag)
 			break;
-		if (!WriteFile(fh, buffer.data(), rd, nullptr, nullptr)) {
-			if (DWORD error = GetLastError(); error != ERROR_OPERATION_ABORTED)
-				errorMessage("WriteFile failed", error);
-			break;
-		}
-		std::cout << "written" << std::endl;
+		if (mode == Mode::Filter)
+			if (!WriteFile(fh, buffer.data(), rd, nullptr, nullptr)) {
+				if (DWORD error = GetLastError(); error != ERROR_OPERATION_ABORTED)
+					errorMessage("WriteFile failed", error);
+				break;
+			}
 	}
 	terminateConfirm = true;
 	// Finish

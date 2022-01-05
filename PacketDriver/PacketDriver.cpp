@@ -56,10 +56,12 @@ namespace {
 		WDFQUEUE queue;
 	};
 
-	/*** Statistics ****************************************************************/
+	/*** IOCTL *********************************************************************/
 
-	// Requires holding ioctlQueue lock
-	PacketDriverStats stats{};
+	// Access to all IOCTL variables require holding ioctlQueue lock
+
+	PacketDriverStats stats{}; // statistics
+	bool filterMode = false; // Watch (false) or filter (true)
 
 	/*** Packet read processing ****************************************************/
 
@@ -199,7 +201,7 @@ namespace {
 	PacketStorage storage;
 
 	// Must be called with locked synchronization lock of readQueue
-	void doPacketRead(bool readReady, NET_BUFFER_LIST* packet, const FWPS_INCOMING_METADATA_VALUES0* meta,
+	bool doPacketRead(bool readReady, NET_BUFFER_LIST* packet, const FWPS_INCOMING_METADATA_VALUES0* meta,
 		const UINT32*interfaceIdx, const UINT32* subinterfaceIdx, PacketInfo::Direction direction)
 	{
 		if (readReady)
@@ -268,11 +270,12 @@ namespace {
 			receivedPackets += n;
 			WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, used);
 		}
+		QueueLockGuard lock(ioctlQueue);
 		if (receivedPackets != 0 || receivedBytes != 0) {
-			QueueLockGuard lock(ioctlQueue);
 			stats.receivedPackets += receivedPackets;
 			stats.receivedBytes += receivedBytes;
 		}
+		return filterMode;
 	}
 
 	/*** Packet write processing ***************************************************/
@@ -314,6 +317,8 @@ namespace {
 	{
 		{
 			QueueLockGuard lock(ioctlQueue);
+			if (!filterMode)
+				return; // no writing in watch mode
 			if (writingPackets >= maxWriteStoredPackets || writingBytes + info.size > maxWriteStoredBytes) {
 				++stats.sentDroppedPackets;
 				return;
@@ -486,12 +491,16 @@ namespace {
 			NdisRetreatNetBufferListDataStart(nbl, inMetaValues->ipHeaderSize, 0, nullptr, nullptr);
 		}
 		QueueLockGuard lock(readQueue);
-		doPacketRead(false, nbl, inMetaValues,getInterfaceIdx(inFixedValues), getSubinterfaceIdx(inFixedValues), direction);
+		bool block = doPacketRead(false, nbl, inMetaValues, getInterfaceIdx(inFixedValues), getSubinterfaceIdx(inFixedValues),
+			direction);
 		if (direction == PacketInfo::Direction::Receive)
 			NdisAdvanceNetBufferListDataStart(nbl, inMetaValues->ipHeaderSize, false, nullptr);
-		// Consume the packet silently
-		classifyOut->actionType = FWP_ACTION_BLOCK;
-		classifyOut->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
+		if (block) {
+			// Consume the packet silently
+			classifyOut->actionType = FWP_ACTION_BLOCK;
+			classifyOut->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
+		} else
+			classifyOut->actionType = FWP_ACTION_PERMIT;
 	}
 
 	void packetClassifyFnInbound(const FWPS_INCOMING_VALUES0* inFixedValues,
@@ -544,6 +553,12 @@ namespace {
 		}
 		case IOCTL_PACKETDRIVER_RESET_STATS:
 			stats = {};
+			break;
+		case IOCTL_PACKETDRIVER_WATCH:
+			filterMode = false;
+			break;
+		case IOCTL_PACKETDRIVER_FILTER:
+			filterMode = true;
 			break;
 		default:
 			WdfRequestCompleteWithInformation(Request, STATUS_UNSUCCESSFUL, 0);
