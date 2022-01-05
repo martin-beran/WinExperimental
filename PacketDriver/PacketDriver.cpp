@@ -68,7 +68,7 @@ namespace {
 	class PacketStorage {
 	public:
 		bool empty() {
-			return popPacketIdx < count[popSelect] || count[1 - popSelect] > 0;
+			return popPacketIdx == count[popSelect] && count[1 - popSelect] == 0;
 		}
 		NTSTATUS init() {
 			if (storedPackets == 0) {
