@@ -70,7 +70,7 @@ namespace {
 	class PacketStorage {
 	public:
 		bool empty() {
-			return popPacketIdx == count[popSelect] && count[1 - popSelect] == 0;
+			return pushSelect == popSelect && popPacketIdx == count[popSelect];
 		}
 		NTSTATUS init() {
 			if (storedPackets == 0) {
@@ -135,8 +135,6 @@ namespace {
 					popSelect = 1 - popSelect;
 					popPacketIdx = 0;
 					popDataIdx = 0;
-				}
-				{
 					QueueLockGuard lock(ioctlQueue);
 					stats.receivedDroppedPackets += count[pushSelect];
 				}
@@ -254,12 +252,12 @@ namespace {
 			storage.restore();
 			PacketInfo* bufPkt = reinterpret_cast<PacketInfo*>(buffer);
 			used = (n + 1) * sizeof(PacketInfo);
-			char* bufData = reinterpret_cast<char*>(buffer) + used;
 			for (size_t i = 0; i < n; ++i) {
+				char* bufData = reinterpret_cast<char*>(buffer) + used;
 				void* data = storage.get(info);
 				bufPkt[i] = *info;
-				receivedBytes += bufPkt->size;
-				if (bufPkt->size > bufsz - used)
+				receivedBytes += bufPkt[i].size;
+				if (bufPkt[i].size > bufsz - used)
 					bufPkt[i].size = bufsz - used;
 				RtlCopyMemory(bufData, data, bufPkt[i].size);
 				used += bufPkt[i].size;
@@ -272,10 +270,8 @@ namespace {
 			WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, used);
 		}
 		QueueLockGuard lock(ioctlQueue);
-		if (receivedPackets != 0 || receivedBytes != 0) {
-			stats.receivedPackets += receivedPackets;
-			stats.receivedBytes += receivedBytes;
-		}
+		stats.receivedPackets += receivedPackets;
+		stats.receivedBytes += receivedBytes;
 		return filterMode;
 	}
 
