@@ -202,14 +202,19 @@ int wmain(int argc, wchar_t* argv[], [[maybe_unused]] wchar_t* envp[])
 				break;
 			}
 			terminateConfirm = true;
-			if (pcap.isReady())
-				pcap.writePacket(std::string_view(buffer.data(), rd));
 			size_t packets = 0;
 			size_t bytes = 0;
 			for (PacketInfo* p = reinterpret_cast<PacketInfo*>(buffer.data()); p->size > 0; ++p) {
 				++packets;
 				bytes += p->size;
 				std::cout << (p->direction == PacketInfo::Direction::Send ? "-> " : "<- ") << p->size << std::endl;
+			}
+			if (pcap.isReady()) {
+				char* pData = buffer.data() + (packets + 1) * sizeof(PacketInfo);
+				for (PacketInfo* p = reinterpret_cast<PacketInfo*>(buffer.data()); p->size > 0; ++p) {
+					pcap.writePacket(std::string_view(pData, p->size));
+					pData += p->size;
+				}
 			}
 			stats.packets += packets;
 			stats.bytes += bytes;
