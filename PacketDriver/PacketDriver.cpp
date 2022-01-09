@@ -156,7 +156,7 @@ namespace {
 			return result;
 		}
 		void* get(PacketInfo*& packetInfo) {
-			if (count[popSelect] != 0 && popPacketIdx == count[popSelect]) {
+			if (popSelect != pushSelect && popPacketIdx == count[popSelect]) {
 				popSelect = 1 - popSelect;
 				popPacketIdx = 0;
 				popDataIdx = 0;
@@ -491,6 +491,7 @@ namespace {
 			if ((inMetaValues->currentMetadataValues & FWPS_METADATA_FIELD_IP_HEADER_SIZE) !=
 				FWPS_METADATA_FIELD_IP_HEADER_SIZE)
 			{
+				classifyOut->actionType = FWP_ACTION_CONTINUE;
 				return;
 			}
 			NdisRetreatNetBufferListDataStart(nbl, inMetaValues->ipHeaderSize, 0, nullptr, nullptr);
