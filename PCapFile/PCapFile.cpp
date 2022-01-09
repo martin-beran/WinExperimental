@@ -52,7 +52,9 @@ void PCapFile::create()
 
 void PCapFile::close()
 {
-	if (fh != INVALID_HANDLE_VALUE && !CloseHandle(fh))
+	auto tmph = fh;
+	fh = INVALID_HANDLE_VALUE;
+	if (tmph != INVALID_HANDLE_VALUE && !CloseHandle(tmph))
 		throw PCapFileError("Cannot close file", GetLastError());
 }
 
