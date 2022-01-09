@@ -61,6 +61,7 @@ struct PacketInfo {
 	IF_INDEX interfaceIdx;
 	IF_INDEX subinterfaceIdx;
 	size_t size;
+	UINT32 ipHeaderSize;
 };
 
 #define IOCTL_PACKETDRIVER_GET_STATS CTL_CODE(PACKETDRIVER_DEVICE_TYPE, 0x800, METHOD_BUFFERED, FILE_WRITE_DATA)

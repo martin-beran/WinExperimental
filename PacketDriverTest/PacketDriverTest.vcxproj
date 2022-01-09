@@ -147,6 +147,11 @@
   <ItemGroup>
     <ClCompile Include="PacketDriverTest.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PCapFile\PCapFile.vcxproj">
+      <Project>{1d7e6572-3aff-4fa9-802f-15acac8897ed}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

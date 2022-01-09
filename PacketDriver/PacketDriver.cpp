@@ -149,6 +149,7 @@ namespace {
 			pi.interfaceIdx = IF_INDEX(interfaceIdx ? *interfaceIdx : 0);
 			pi.subinterfaceIdx = IF_INDEX(subinterfaceIdx ? *subinterfaceIdx : 0);
 			pi.size = sz;
+			pi.ipHeaderSize = direction == PacketInfo::Direction::Receive ? meta->ipHeaderSize : 0;
 			void* result = data[pushSelect] + pushDataIdx;
 			++count[pushSelect];
 			pushDataIdx += sz;
@@ -350,6 +351,10 @@ namespace {
 			}
 			break;
 		case PacketInfo::Direction::Receive:
+			if (info.ipHeaderSize <= info.size)
+				NdisAdvanceNetBufferListDataStart(bufferList, info.ipHeaderSize, false, nullptr);
+			else
+				goto fail; // cannot skip past the end of the packet
 			if (FwpsInjectNetworkReceiveAsync0(injectionHandleIpv4, nullptr, 0, info.compartment, info.interfaceIdx,
 				info.subinterfaceIdx, bufferList, injectComplete, nullptr) != STATUS_SUCCESS)
 			{

@@ -1,6 +1,7 @@
 #define NOMINMAX
 
 #include "PacketDriver/PacketDriver.h"
+#include "PCapFile/PcapFile.h"
 
 #include <fwpmu.h>
 
@@ -115,109 +116,123 @@ void printStats()
 	}
 }
 
-int main(int argc, char* argv[])
-try {
-	Mode mode = Mode::Watch;
-	if (argc > 1) {
-		using namespace std::string_literals;
-		if (argv[1] == "watch"s)
-			mode = Mode::Watch;
-		else if (argv[1] == "filter"s)
-			mode = Mode::Filter;
-	}
-	// Parameters
-	size_t bufferSize = 10 * (sizeof(PacketInfo) + 1500) + sizeof(PacketInfo); // space for 10 packets
-    // Open device
-    fh = CreateFile(PACKETDRIVER_DEVICE, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-		nullptr);
-	if (fh == INVALID_HANDLE_VALUE)
-		return errorMessage("Cannot open device", GetLastError());
-	if (DWORD ret; !DeviceIoControl(fh, mode == Mode::Watch ? IOCTL_PACKETDRIVER_WATCH : IOCTL_PACKETDRIVER_FILTER,
-		nullptr, 0, nullptr, 0, &ret, nullptr))
-	{
-		return errorMessage("IOCTL_PACKETDRIVER_{WATCH|FILTER} failed", GetLastError());
-	}
-	if (DWORD ret; !DeviceIoControl(fh, IOCTL_PACKETDRIVER_RESET_STATS, nullptr, 0, nullptr, 0, &ret, nullptr))
-		return errorMessage("IOCTL_PACKETDRIVER_RESET_STATS failed", GetLastError());
-	if (!SetConsoleCtrlHandler(terminateHandler, true))
-		return errorMessage("SetConsoleCtrlHandler failed", GetLastError());
-	// Configure packet filtering
-	FWPM_SESSION0 session{};
-	session.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest session");
-	session.flags = FWPM_SESSION_FLAG_DYNAMIC;
-	session.txnWaitTimeoutInMSec = INFINITE;
-	HANDLE engine = nullptr;
-	callFwpm("FwpmEngineOpen0 failed", FwpmEngineOpen0, nullptr, RPC_C_AUTHN_DEFAULT, nullptr, &session, &engine);
-	FWPM_PROVIDER0 provider{};
-	provider.providerKey = providerKeyGuid;
-	provider.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest provider");
-	callFwpm("FwpmProviderAdd0 failed", FwpmProviderAdd0, engine, &provider, nullptr);
-	FWPM_SUBLAYER0 sublayer{};
-	sublayer.subLayerKey = sublayerKeyGuid;
-	sublayer.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest sublayer");
-	sublayer.providerKey = const_cast<GUID*>(&providerKeyGuid);
-	sublayer.weight = 0x8000;
-	callFwpm("FwpmSublayerAdd0 failed", FwpmSubLayerAdd0, engine, &sublayer, nullptr);
-	FWPM_CALLOUT0 callout{};
-	callout.calloutKey = PacketDriverInboundCalloutGuid;
-	callout.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest inbound callout");
-	callout.providerKey = const_cast<GUID*>(&providerKeyGuid);
-	callout.applicableLayer = FWPM_LAYER_INBOUND_IPPACKET_V4;
-	callFwpm("FwpmCalloutAdd0 inbound failed", FwpmCalloutAdd0, engine, &callout, nullptr, nullptr);
-	callout.calloutKey = PacketDriverOutboundCalloutGuid;
-	callout.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest outbound callout");
-	callout.applicableLayer = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
-	callFwpm("FwpmCalloutAdd0 outbound failed", FwpmCalloutAdd0, engine, &callout, nullptr, nullptr);
-	FWPM_FILTER0 filter{};
-	filter.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest filter");
-	filter.flags = FWPM_FILTER_FLAG_PERMIT_IF_CALLOUT_UNREGISTERED;
-	filter.providerKey = const_cast<GUID*>(&providerKeyGuid);
-	filter.layerKey = FWPM_LAYER_INBOUND_IPPACKET_V4;
-	filter.subLayerKey = sublayerKeyGuid;
-	filter.weight.type = FWP_EMPTY;
-	filter.numFilterConditions = 0;
-	filter.action.type = FWP_ACTION_CALLOUT_UNKNOWN;
-	filter.action.calloutKey = PacketDriverInboundCalloutGuid;
-	callFwpm("FwpmFilterAdd0 inbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
-	filter.filterKey = {};
-	filter.layerKey = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
-	filter.action.calloutKey = PacketDriverOutboundCalloutGuid;
-	callFwpm("FwpmFilterAdd0 outbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
-	// Process packets
-	std::vector<char> buffer(bufferSize);
-	while (!terminateFlag) {
-		DWORD rd;
-		if (!ReadFile(fh, buffer.data(), DWORD(buffer.size()), &rd, nullptr)) {
-			if (DWORD error = GetLastError(); error != ERROR_OPERATION_ABORTED)
-				errorMessage("ReadFile failed", error);
-			break;
+int wmain(int argc, wchar_t* argv[], [[maybe_unused]] wchar_t* envp[])
+{
+	std::wstring pcapFileName;
+	try {
+		Mode mode = Mode::Watch;
+		if (argc > 1) {
+			using namespace std::string_literals;
+			if (argv[1] == L"watch"s)
+				mode = Mode::Watch;
+			else if (argv[1] == L"filter"s)
+				mode = Mode::Filter;
 		}
-		terminateConfirm = true;
-		size_t packets = 0;
-		size_t bytes = 0;
-		for (PacketInfo* p = reinterpret_cast<PacketInfo*>(buffer.data()); p->size > 0; ++p) {
-			++packets;
-			bytes += p->size;
-			std::cout << (p->direction == PacketInfo::Direction::Send ? "-> " : "<- ") << p->size << std::endl;
+		PCapFile pcap;
+		if (argc > 2) {
+			pcapFileName = argv[2];
+			pcap = PCapFile(pcapFileName);
+			pcap.create();
 		}
-		stats.packets += packets;
-		stats.bytes += bytes;
-		terminateConfirm = false;
-		if (terminateFlag)
-			break;
-		if (mode == Mode::Filter)
-			if (!WriteFile(fh, buffer.data(), rd, nullptr, nullptr)) {
+		// Parameters
+		size_t bufferSize = 10 * (sizeof(PacketInfo) + 1500) + sizeof(PacketInfo); // space for 10 packets
+		// Open device
+		fh = CreateFile(PACKETDRIVER_DEVICE, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+			nullptr);
+		if (fh == INVALID_HANDLE_VALUE)
+			return errorMessage("Cannot open device", GetLastError());
+		if (DWORD ret; !DeviceIoControl(fh, mode == Mode::Watch ? IOCTL_PACKETDRIVER_WATCH : IOCTL_PACKETDRIVER_FILTER,
+			nullptr, 0, nullptr, 0, &ret, nullptr))
+		{
+			return errorMessage("IOCTL_PACKETDRIVER_{WATCH|FILTER} failed", GetLastError());
+		}
+		if (DWORD ret; !DeviceIoControl(fh, IOCTL_PACKETDRIVER_RESET_STATS, nullptr, 0, nullptr, 0, &ret, nullptr))
+			return errorMessage("IOCTL_PACKETDRIVER_RESET_STATS failed", GetLastError());
+		if (!SetConsoleCtrlHandler(terminateHandler, true))
+			return errorMessage("SetConsoleCtrlHandler failed", GetLastError());
+		// Configure packet filtering
+		FWPM_SESSION0 session{};
+		session.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest session");
+		session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+		session.txnWaitTimeoutInMSec = INFINITE;
+		HANDLE engine = nullptr;
+		callFwpm("FwpmEngineOpen0 failed", FwpmEngineOpen0, nullptr, RPC_C_AUTHN_DEFAULT, nullptr, &session, &engine);
+		FWPM_PROVIDER0 provider{};
+		provider.providerKey = providerKeyGuid;
+		provider.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest provider");
+		callFwpm("FwpmProviderAdd0 failed", FwpmProviderAdd0, engine, &provider, nullptr);
+		FWPM_SUBLAYER0 sublayer{};
+		sublayer.subLayerKey = sublayerKeyGuid;
+		sublayer.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest sublayer");
+		sublayer.providerKey = const_cast<GUID*>(&providerKeyGuid);
+		sublayer.weight = 0x8000;
+		callFwpm("FwpmSublayerAdd0 failed", FwpmSubLayerAdd0, engine, &sublayer, nullptr);
+		FWPM_CALLOUT0 callout{};
+		callout.calloutKey = PacketDriverInboundCalloutGuid;
+		callout.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest inbound callout");
+		callout.providerKey = const_cast<GUID*>(&providerKeyGuid);
+		callout.applicableLayer = FWPM_LAYER_INBOUND_IPPACKET_V4;
+		callFwpm("FwpmCalloutAdd0 inbound failed", FwpmCalloutAdd0, engine, &callout, nullptr, nullptr);
+		callout.calloutKey = PacketDriverOutboundCalloutGuid;
+		callout.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest outbound callout");
+		callout.applicableLayer = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
+		callFwpm("FwpmCalloutAdd0 outbound failed", FwpmCalloutAdd0, engine, &callout, nullptr, nullptr);
+		FWPM_FILTER0 filter{};
+		filter.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest filter");
+		filter.flags = FWPM_FILTER_FLAG_PERMIT_IF_CALLOUT_UNREGISTERED;
+		filter.providerKey = const_cast<GUID*>(&providerKeyGuid);
+		filter.layerKey = FWPM_LAYER_INBOUND_IPPACKET_V4;
+		filter.subLayerKey = sublayerKeyGuid;
+		filter.weight.type = FWP_EMPTY;
+		filter.numFilterConditions = 0;
+		filter.action.type = FWP_ACTION_CALLOUT_UNKNOWN;
+		filter.action.calloutKey = PacketDriverInboundCalloutGuid;
+		callFwpm("FwpmFilterAdd0 inbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
+		filter.filterKey = {};
+		filter.layerKey = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
+		filter.action.calloutKey = PacketDriverOutboundCalloutGuid;
+		callFwpm("FwpmFilterAdd0 outbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
+		// Process packets
+		std::vector<char> buffer(bufferSize);
+		while (!terminateFlag) {
+			DWORD rd;
+			if (!ReadFile(fh, buffer.data(), DWORD(buffer.size()), &rd, nullptr)) {
 				if (DWORD error = GetLastError(); error != ERROR_OPERATION_ABORTED)
-					errorMessage("WriteFile failed", error);
+					errorMessage("ReadFile failed", error);
 				break;
 			}
+			terminateConfirm = true;
+			if (pcap.isReady())
+				pcap.writePacket(std::string_view(buffer.data(), rd));
+			size_t packets = 0;
+			size_t bytes = 0;
+			for (PacketInfo* p = reinterpret_cast<PacketInfo*>(buffer.data()); p->size > 0; ++p) {
+				++packets;
+				bytes += p->size;
+				std::cout << (p->direction == PacketInfo::Direction::Send ? "-> " : "<- ") << p->size << std::endl;
+			}
+			stats.packets += packets;
+			stats.bytes += bytes;
+			terminateConfirm = false;
+			if (terminateFlag)
+				break;
+			if (mode == Mode::Filter)
+				if (!WriteFile(fh, buffer.data(), rd, nullptr, nullptr)) {
+					if (DWORD error = GetLastError(); error != ERROR_OPERATION_ABORTED)
+						errorMessage("WriteFile failed", error);
+					break;
+				}
+		}
+		terminateConfirm = true;
+		// Finish
+		printStats();
+		pcap.close();
+		return EXIT_SUCCESS;
+	} catch (const WindowsError& e) {
+		std::cerr << e.what() << "caught, exiting" << '\n';
+		printStats();
+		return EXIT_FAILURE;
+	} catch (const PCapFileError& e) {
+		std::wcout << pcapFileName << ": " << e.what();
 	}
-	terminateConfirm = true;
-	// Finish
-	printStats();
-    return EXIT_SUCCESS;
-} catch (const WindowsError& e) {
-	std::cerr << e.what() << "caught, exiting" << '\n';
-	printStats();
-	return EXIT_FAILURE;
 }
