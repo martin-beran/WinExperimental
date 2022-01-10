@@ -501,6 +501,7 @@ namespace {
 			// Consume the packet silently
 			classifyOut->actionType = FWP_ACTION_BLOCK;
 			classifyOut->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
+			classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
 		} else
 			classifyOut->actionType = FWP_ACTION_PERMIT;
 	}
