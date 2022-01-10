@@ -9,9 +9,10 @@
 #include <ifdef.h>
 
 struct PacketDriverStats {
-	ULONGLONG receivedPackets = 0; // does not include dropped packets
-	ULONGLONG receivedBytes = 0; // does not include bytes of dropped packets
+	ULONGLONG receivedPackets = 0; // does not include dropped packets and ignored fragments
+	ULONGLONG receivedBytes = 0; // does not include bytes of dropped packets and ignored fragments
 	ULONGLONG receivedDroppedPackets = 0;
+	ULONGLONG ignoredFragments = 0;
 	ULONGLONG sentPackets = 0; // does not include dropped or failed packets
 	ULONGLONG sentBytes = 0; // does not include bytes of dropped or failed packets
 	ULONGLONG sentFailedPackets = 0;

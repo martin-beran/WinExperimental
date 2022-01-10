@@ -110,6 +110,7 @@ void printStats()
 			"receivedPackets=" << driverStats.receivedPackets << '\n' <<
 			"receivedBytes=" << driverStats.receivedBytes << '\n' <<
 			"receivedDroppedPackets=" << driverStats.receivedDroppedPackets << '\n' <<
+			"ignoredFragments=" << driverStats.ignoredFragments << '\n' <<
 			"sentPackets=" << driverStats.sentPackets << '\n' <<
 			"sentBytes=" << driverStats.sentBytes << '\n' <<
 			"sentFailedPackets=" << driverStats.sentFailedPackets << '\n' <<

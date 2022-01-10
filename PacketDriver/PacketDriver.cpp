@@ -218,6 +218,8 @@ namespace {
 						if (dataLength >= 20 && (pc[0] & 0xf0) == 0x40 && ((pc[6] & 0b0011'1111) != 0 || pc[7] != 0)) {
 							// ignore fragments
 							storage.uninsert();
+							QueueLockGuard lock(ioctlQueue);
+							++stats.ignoredFragments;
 							return false;
 						}
 						if (p != packetData)
