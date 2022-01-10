@@ -78,6 +78,7 @@ std::atomic<bool> terminateFlag{false};
 std::atomic<bool>terminateConfirm{false};
 
 struct Stats {
+	std::atomic<unsigned long long> reads{0};
 	std::atomic<unsigned long long> packets{0};
 	std::atomic<unsigned long long> bytes{0};
 };
@@ -96,6 +97,7 @@ BOOL terminateHandler([[maybe_unused]] DWORD ctrlType)
 void printStats()
 {
 	std::cout << "User stats:\n" <<
+		"reads=" << stats.reads.load() << '\n' <<
 		"packets=" << stats.packets.load() << '\n' <<
 		"bytes=" << stats.bytes.load() << std::endl;
 	PacketDriverStats driverStats;
@@ -116,18 +118,42 @@ void printStats()
 	}
 }
 
+int usage()
+{
+	std::cerr << R"(usage: PacketDriverTest {watch|quietwatch|filter|quietfilter} [file.pcap]
+
+watch ... get copy of packets, log each packet
+quietwatch ... get copy of packets, do not log packets
+filter ... intercept packets, log each packet
+quietfilter ... intercept packets, do not log packets
+
+file.pcap = optional output PCAP file where all captured packets will be saved
+)";
+	return EXIT_FAILURE;
+}
+
 int wmain(int argc, wchar_t* argv[], [[maybe_unused]] wchar_t* envp[])
 {
 	std::wstring pcapFileName;
 	try {
 		Mode mode = Mode::Watch;
+		bool quiet = false;
 		if (argc > 1) {
 			using namespace std::string_literals;
 			if (argv[1] == L"watch"s)
 				mode = Mode::Watch;
-			else if (argv[1] == L"filter"s)
+			else if (argv[1] == L"quietwatch"s) {
+				mode = Mode::Watch;
+				quiet = true;
+			} else if (argv[1] == L"filter"s)
 				mode = Mode::Filter;
-		}
+			else if (argv[1] == L"quietfilter"s) {
+				mode = Mode::Filter;
+				quiet = true;
+			} else
+				return usage();
+		} else
+			return usage();
 		PCapFile pcap;
 		if (argc > 2) {
 			pcapFileName = argv[2];
@@ -202,14 +228,16 @@ int wmain(int argc, wchar_t* argv[], [[maybe_unused]] wchar_t* envp[])
 					errorMessage("ReadFile failed", error);
 				break;
 			}
+			++stats.reads;
 			terminateConfirm = true;
 			size_t packets = 0;
 			size_t bytes = 0;
 			for (PacketInfo* p = reinterpret_cast<PacketInfo*>(buffer.data()); p->size > 0; ++p) {
 				++packets;
 				bytes += p->size;
-				std::cout << packetNo++ << (p->direction == PacketInfo::Direction::Send ? " -> " : " <- ") << p->size <<
-					std::endl;
+				if (!quiet)
+					std::cout << packetNo++ << (p->direction == PacketInfo::Direction::Send ? " -> " : " <- ") << p->size <<
+						std::endl;
 			}
 			std::cout << packets << " packets" << std::endl;
 			if (pcap.isReady()) {
