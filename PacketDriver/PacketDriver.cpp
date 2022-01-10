@@ -70,7 +70,7 @@ namespace {
 	class PacketStorage {
 	public:
 		bool empty() {
-			return pushSelect == popSelect && popPacketIdx == count[popSelect];
+			return (pushSelect == popSelect || count[pushSelect] == 0) && popPacketIdx == count[popSelect];
 		}
 		NTSTATUS init() {
 			if (storedPackets == 0) {
@@ -153,6 +153,9 @@ namespace {
 			pushDataIdx += sz;
 			return result;
 		}
+		void uninsert() {
+			pushDataIdx -= info[pushSelect][--count[pushSelect]].size;
+		}
 		void* get(PacketInfo*& packetInfo) {
 			if (popSelect != pushSelect && popPacketIdx == count[popSelect]) {
 				popSelect = 1 - popSelect;
@@ -210,6 +213,13 @@ namespace {
 				ULONG dataLength = nb->DataLength;
 				if (void* packetData = storage.insert(dataLength, meta, interfaceIdx, subinterfaceIdx, direction)) {
 					if (void* p = NdisGetDataBuffer(nb, dataLength, packetData, 1, 0)) {
+						unsigned char* pc = reinterpret_cast<unsigned char*>(p);
+						// IPv4 header, with MoreFragments or nonzero FragmentOffset
+						if (dataLength >= 20 && (pc[0] & 0xf0) == 0x40 && ((pc[6] & 0b0011'1111) != 0 || pc[7] != 0)) {
+							// ignore fragments
+							storage.uninsert();
+							return false;
+						}
 						if (p != packetData)
 							RtlCopyMemory(packetData, p, dataLength);
 					}

@@ -204,18 +204,26 @@ int wmain(int argc, wchar_t* argv[], [[maybe_unused]] wchar_t* envp[])
 		callout.applicableLayer = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
 		callFwpm("FwpmCalloutAdd0 outbound failed", FwpmCalloutAdd0, engine, &callout, nullptr, nullptr);
 		FWPM_FILTER0 filter{};
+		FWPM_FILTER_CONDITION0 filterCondition{};
 		filter.displayData.name = const_cast<wchar_t*>(L"PacketDriverTest filter");
 		filter.flags = FWPM_FILTER_FLAG_PERMIT_IF_CALLOUT_UNREGISTERED;
 		filter.providerKey = const_cast<GUID*>(&providerKeyGuid);
 		filter.layerKey = FWPM_LAYER_INBOUND_IPPACKET_V4;
 		filter.subLayerKey = sublayerKeyGuid;
 		filter.weight.type = FWP_EMPTY;
-		filter.numFilterConditions = 0;
+		filter.numFilterConditions = 1;
+		filterCondition.fieldKey = FWPM_CONDITION_FLAGS; // ignore IP fragments
+		filterCondition.matchType = FWP_MATCH_FLAGS_NONE_SET;
+		filterCondition.conditionValue.type = FWP_UINT32;
+		filterCondition.conditionValue.uint32 = FWP_CONDITION_FLAG_IS_FRAGMENT;
+		filter.filterCondition = &filterCondition;
 		filter.action.type = FWP_ACTION_CALLOUT_UNKNOWN;
 		filter.action.calloutKey = PacketDriverInboundCalloutGuid;
 		callFwpm("FwpmFilterAdd0 inbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
 		filter.filterKey = {};
 		filter.layerKey = FWPM_LAYER_OUTBOUND_IPPACKET_V4;
+		filter.numFilterConditions = 0; // IP fragments can be only inbound
+		filter.filterCondition = nullptr;
 		filter.action.calloutKey = PacketDriverOutboundCalloutGuid;
 		callFwpm("FwpmFilterAdd0 outbound failed", FwpmFilterAdd0, engine, &filter, nullptr, nullptr);
 		// Process packets
