@@ -116,7 +116,7 @@ namespace {
 			}
 		}
 		void* insert(size_t sz, const FWPS_INCOMING_METADATA_VALUES0* meta, const UINT32* interfaceIdx,
-			const UINT32* subinterfaceIdx, PacketInfo::Direction direction)
+			const UINT32* subinterfaceIdx, PacketInfo::Direction direction, PVOID checksumInfo)
 		{
 			if (sz > storedBytes)
 				return nullptr; // packet does not fit to the data buffer
@@ -147,6 +147,7 @@ namespace {
 			pi.interfaceIdx = IF_INDEX(interfaceIdx ? *interfaceIdx : 0);
 			pi.subinterfaceIdx = IF_INDEX(subinterfaceIdx ? *subinterfaceIdx : 0);
 			pi.size = sz;
+			pi.checksumInfo = checksumInfo;
 			void* result = data[pushSelect] + pushDataIdx;
 			++count[pushSelect];
 			pushDataIdx += sz;
@@ -210,7 +211,9 @@ namespace {
 		if (packet && meta) {
 			if (NET_BUFFER* nb = NET_BUFFER_LIST_FIRST_NB(packet)) {
 				ULONG dataLength = nb->DataLength;
-				if (void* packetData = storage.insert(dataLength, meta, interfaceIdx, subinterfaceIdx, direction)) {
+				if (void* packetData = storage.insert(dataLength, meta, interfaceIdx, subinterfaceIdx, direction,
+					NET_BUFFER_LIST_INFO(packet, TcpIpChecksumNetBufferListInfo)))
+				{
 					if (void* p = NdisGetDataBuffer(nb, dataLength, packetData, 1, 0)) {
 						unsigned char* pc = reinterpret_cast<unsigned char*>(p);
 						// IPv4 header, with MoreFragments or nonzero FragmentOffset
@@ -348,6 +351,7 @@ namespace {
 			goto fail;
 		mdl = nullptr;
 		buffer = nullptr;
+		NET_BUFFER_LIST_INFO(bufferList, TcpIpChecksumNetBufferListInfo) = info.checksumInfo;
 		// TODO injection of IPv6 via injectionHandleIpv6
 		switch (info.direction) {
 		case PacketInfo::Direction::Send:
