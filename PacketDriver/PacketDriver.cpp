@@ -209,7 +209,7 @@ namespace {
 		if (readReady)
 			ioReadReady = true;
 		if (packet && meta) {
-			if (NET_BUFFER* nb = NET_BUFFER_LIST_FIRST_NB(packet)) {
+			for (NET_BUFFER* nb = NET_BUFFER_LIST_FIRST_NB(packet); nb; nb = NET_BUFFER_NEXT_NB(nb)) {
 				ULONG dataLength = nb->DataLength;
 				if (void* packetData = storage.insert(dataLength, meta, interfaceIdx, subinterfaceIdx, direction,
 					NET_BUFFER_LIST_INFO(packet, TcpIpChecksumNetBufferListInfo)))
