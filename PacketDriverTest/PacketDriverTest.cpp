@@ -248,7 +248,8 @@ int wmain(int argc, wchar_t* argv[], [[maybe_unused]] wchar_t* envp[])
 					std::cout << packetNo++ << (p->direction == PacketInfo::Direction::Send ? " -> " : " <- ") << p->size <<
 						std::endl;
 			}
-			std::cout << packets << " packets" << std::endl;
+			if (!quiet)
+				std::cout << packets << " packets" << std::endl;
 			if (pcap.isReady()) {
 				char* pData = buffer.data() + (packets + 1) * sizeof(PacketInfo);
 				for (PacketInfo* p = reinterpret_cast<PacketInfo*>(buffer.data()); p->size > 0; ++p) {
